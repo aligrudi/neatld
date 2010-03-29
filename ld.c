@@ -40,15 +40,21 @@ struct outelf {
 	unsigned long vaddr;
 };
 
-static int obj_find(struct obj *obj, char *name)
+static int obj_find(struct obj *obj, char *name, int *s_idx, int *s_off)
 {
 	int i;
 	for (i = 0; i < obj->nsyms; i++) {
 		Elf64_Sym *sym = &obj->syms[i];
-		if (!strcmp(name, obj->symstr + sym->st_name))
-			return i;
+		if (ELF64_ST_BIND(sym->st_info) == STB_LOCAL ||
+				sym->st_shndx == SHN_UNDEF)
+			continue;
+		if (!strcmp(name, obj->symstr + sym->st_name)) {
+			*s_idx = sym->st_shndx;
+			*s_off = sym->st_value;
+			return 0;
+		}
 	}
-	return 0;
+	return 1;
 }
 
 static void obj_init(struct obj *obj, char *mem)
@@ -89,14 +95,34 @@ static void outelf_init(struct outelf *oe)
 	oe->vaddr = 0x800000l + oe->faddr;
 }
 
+static struct secmap *outelf_mapping(struct outelf *oe, Elf64_Shdr *shdr)
+{
+	int i;
+	for (i = 0; i < oe->nsecs; i++)
+		if (oe->secs[i].o_shdr == shdr)
+			return &oe->secs[i];
+	return NULL;
+}
+
+static unsigned long outelf_find(struct outelf *oe, char *name)
+{
+	int s_idx, s_off;
+	int i;
+	for (i = 0; i < oe->nobjs; i++) {
+		struct obj *obj = &oe->objs[i];
+		if (!obj_find(obj, name, &s_idx, &s_off)) {
+			struct secmap *sec;
+			if ((sec = outelf_mapping(oe, &obj->shdr[s_idx])))
+				return sec->phdr->p_vaddr + s_off;
+		}
+	}
+	return 0;
+}
+
 static void outelf_write(struct outelf *oe, int fd)
 {
 	int i;
-	int _start;
-	Elf64_Sym *sym;
-	_start = obj_find(&oe->objs[0], "_start");
-	sym = &oe->objs[0].syms[_start];
-	oe->ehdr.e_entry = oe->secs[0].phdr->p_vaddr;
+	oe->ehdr.e_entry = outelf_find(oe, "_start");
 
 	oe->ehdr.e_phnum = oe->nph;
 	oe->ehdr.e_phoff = oe->faddr;
@@ -176,17 +202,26 @@ static void die(char *msg)
 
 int main(int argc, char **argv)
 {
+	char out[1 << 10] = "a.out";
 	char *buf;
 	struct outelf oe;
 	int fd;
+	int i = 0;
 	if (argc < 2)
 		die("no object given\n");
-	buf = fileread(argv[1]);
-	if (!buf)
-		die("cannot open object\n");
 	outelf_init(&oe);
-	outelf_link(&oe, buf);
-	fd = open("a.out", O_WRONLY | O_TRUNC | O_CREAT, 0700);
+
+	while (++i < argc) {
+		if (!strcmp("-o", argv[i])) {
+			strcpy(out, argv[++i]);
+			continue;
+		}
+		buf = fileread(argv[i]);
+		if (!buf)
+			die("cannot open object\n");
+		outelf_link(&oe, buf);
+	}
+	fd = open(out, O_WRONLY | O_TRUNC | O_CREAT, 0700);
 	outelf_write(&oe, fd);
 	close(fd);
 	outelf_free(&oe);
