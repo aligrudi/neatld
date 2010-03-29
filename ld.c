@@ -119,6 +119,54 @@ static unsigned long outelf_find(struct outelf *oe, char *name)
 	return 0;
 }
 
+static unsigned long symval(struct outelf *oe, struct obj *obj, Elf64_Sym *sym)
+{
+	struct secmap *sec;
+	switch (ELF64_ST_TYPE(sym->st_info)) {
+	case STT_SECTION:
+		if ((sec = outelf_mapping(oe, &obj->shdr[sym->st_shndx])))
+			return sec->phdr->p_vaddr;
+		break;
+	}
+	return 0;
+}
+
+static void outelf_reloc_sec(struct outelf *oe, int o_idx, int s_idx)
+{
+	struct obj *obj = &oe->objs[o_idx];
+	Elf64_Shdr *rel_shdr = &obj->shdr[s_idx];
+	Elf64_Rela *rel = (void *) obj->mem + obj->shdr[s_idx].sh_offset;
+	void *other = (void *) obj->mem + obj->shdr[rel_shdr->sh_info].sh_offset;
+	int nrel = rel_shdr->sh_size / sizeof(*rel);
+	int i;
+	for (i = 0; i < nrel; i++) {
+		int sym_idx = ELF64_R_SYM(rel[i].r_info);
+		Elf64_Sym *sym = &obj->syms[sym_idx];
+		char *name = obj->symstr + sym->st_name;
+		unsigned long *dst = other + rel[i].r_offset;
+		switch (ELF64_R_TYPE(rel[i].r_info)) {
+		case R_X86_64_32:
+			*(unsigned int *) dst = symval(oe, obj, sym) +
+						rel[i].r_addend;
+			break;
+		case R_X86_64_64:
+			*dst = symval(oe, obj, sym) + rel[i].r_addend;
+			break;
+		}
+	}
+}
+
+static void outelf_reloc(struct outelf *oe)
+{
+	int i, j;
+	for (i = 0; i < oe->nobjs; i++) {
+		struct obj *obj = &oe->objs[i];
+		for (j = 0; j < obj->ehdr->e_shnum; j++)
+			if (obj->shdr[j].sh_type == SHT_RELA)
+				outelf_reloc_sec(oe, i, j);
+	}
+}
+
 static void outelf_write(struct outelf *oe, int fd)
 {
 	int i;
@@ -222,6 +270,7 @@ int main(int argc, char **argv)
 		outelf_link(&oe, buf);
 	}
 	fd = open(out, O_WRONLY | O_TRUNC | O_CREAT, 0700);
+	outelf_reloc(&oe);
 	outelf_write(&oe, fd);
 	close(fd);
 	outelf_free(&oe);
