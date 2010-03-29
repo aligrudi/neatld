@@ -1,0 +1,194 @@
+#include <elf.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#define MAXSECS		(1 << 10)
+#define MAXOBJS		(1 << 7)
+#define PAGESIZE	(1 << 12)
+
+#define ALIGN(x,a)		__ALIGN_MASK(x,(typeof(x))(a)-1)
+#define __ALIGN_MASK(x,mask)	(((x)+(mask))&~(mask))
+
+struct obj {
+	char *mem;
+	Elf64_Ehdr *ehdr;
+	Elf64_Shdr *shdr;
+	Elf64_Sym *syms;
+	int nsyms;
+	char *symstr;
+	char *shstr;
+};
+
+struct secmap {
+	Elf64_Shdr *o_shdr;
+	Elf64_Phdr *phdr;
+	struct obj *obj;
+};
+
+struct outelf {
+	Elf64_Ehdr ehdr;
+	Elf64_Phdr phdr[MAXSECS];
+	int nph;
+	struct secmap secs[MAXSECS];
+	int nsecs;
+	struct obj objs[MAXOBJS];
+	int nobjs;
+	unsigned long faddr;
+	unsigned long vaddr;
+};
+
+static int obj_find(struct obj *obj, char *name)
+{
+	int i;
+	for (i = 0; i < obj->nsyms; i++) {
+		Elf64_Sym *sym = &obj->syms[i];
+		if (!strcmp(name, obj->symstr + sym->st_name))
+			return i;
+	}
+	return 0;
+}
+
+static void obj_init(struct obj *obj, char *mem)
+{
+	int i;
+	obj->mem = mem;
+	obj->ehdr = (void *) mem;
+	obj->shdr = (void *) (mem + obj->ehdr->e_shoff);
+	obj->shstr = mem + obj->shdr[obj->ehdr->e_shstrndx].sh_offset;
+	for (i = 0; i < obj->ehdr->e_shnum; i++) {
+		if (obj->shdr[i].sh_type != SHT_SYMTAB)
+			continue;
+		obj->symstr = mem + obj->shdr[obj->shdr[i].sh_link].sh_offset;
+		obj->syms = (void *) (mem + obj->shdr[i].sh_offset);
+		obj->nsyms = obj->shdr[i].sh_size / sizeof(*obj->syms);
+	}
+}
+
+static void outelf_init(struct outelf *oe)
+{
+	memset(oe, 0, sizeof(*oe));
+	oe->ehdr.e_ident[0] = 0x7f;
+	oe->ehdr.e_ident[1] = 'E';
+	oe->ehdr.e_ident[2] = 'L';
+	oe->ehdr.e_ident[3] = 'F';
+	oe->ehdr.e_ident[4] = ELFCLASS64;
+	oe->ehdr.e_ident[5] = ELFDATA2LSB;
+	oe->ehdr.e_ident[6] = EV_CURRENT;
+	oe->ehdr.e_ident[7] = ELFOSABI_LINUX;
+	oe->ehdr.e_type = ET_EXEC;
+	oe->ehdr.e_machine = EM_X86_64;
+	oe->ehdr.e_version = EV_CURRENT;
+	oe->ehdr.e_shstrndx = SHN_UNDEF;
+	oe->ehdr.e_ehsize = sizeof(oe->ehdr);
+	oe->faddr = sizeof(oe->ehdr);
+	oe->ehdr.e_phentsize = sizeof(oe->phdr[0]);
+	oe->ehdr.e_shentsize = sizeof(Elf64_Shdr);
+	oe->vaddr = 0x800000l + oe->faddr;
+}
+
+static void outelf_write(struct outelf *oe, int fd)
+{
+	int i;
+	int _start;
+	Elf64_Sym *sym;
+	_start = obj_find(&oe->objs[0], "_start");
+	sym = &oe->objs[0].syms[_start];
+	oe->ehdr.e_entry = oe->secs[0].phdr->p_vaddr;
+
+	oe->ehdr.e_phnum = oe->nph;
+	oe->ehdr.e_phoff = oe->faddr;
+	oe->ehdr.e_shnum = 0;
+	oe->ehdr.e_shoff = 0;
+	write(fd, &oe->ehdr, sizeof(oe->ehdr));
+	for (i = 0; i < oe->nsecs; i++) {
+		struct secmap *sec = &oe->secs[i];
+		char *buf = sec->obj->mem + sec->o_shdr->sh_offset;
+		int len = sec->o_shdr->sh_size;
+		lseek(fd, sec->phdr->p_offset, SEEK_SET);
+		write(fd, buf, len);
+	}
+	lseek(fd, oe->faddr, SEEK_SET);
+	write(fd, &oe->phdr, oe->nph * sizeof(oe->phdr[0]));
+}
+
+static void outelf_link(struct outelf *oe, char *mem)
+{
+	Elf64_Ehdr *ehdr = (void *) mem;
+	Elf64_Shdr *shdr = (void *) (mem + ehdr->e_shoff);
+	struct obj *obj = &oe->objs[oe->nobjs++];
+	int i;
+	if (ehdr->e_type != ET_REL)
+		return;
+	obj_init(obj, mem);
+	for (i = 0; i < ehdr->e_shnum; i++) {
+		struct secmap *sec;
+		if (!(shdr[i].sh_flags & 0x7))
+			continue;
+		sec = &oe->secs[oe->nsecs++];
+		sec->o_shdr = &shdr[i];
+		sec->phdr = &oe->phdr[oe->nph++];
+		sec->obj = obj;
+		sec->phdr->p_type = PT_LOAD;
+		sec->phdr->p_flags = PF_R | PF_W | PF_X;
+		sec->phdr->p_vaddr = oe->vaddr;
+		sec->phdr->p_paddr = oe->vaddr;
+		sec->phdr->p_offset = oe->faddr;
+		sec->phdr->p_filesz = shdr[i].sh_size;
+		sec->phdr->p_memsz = shdr[i].sh_size;
+		sec->phdr->p_align = PAGESIZE;
+		oe->faddr += shdr[i].sh_size;
+		oe->vaddr += ALIGN(shdr[i].sh_size, PAGESIZE);
+	}
+}
+
+static void outelf_free(struct outelf *oe)
+{
+	int i;
+	for (i = 0; i < oe->nobjs; i++)
+		free(oe->objs[i].mem);
+}
+
+static long filesize(int fd)
+{
+	struct stat stat;
+	fstat(fd, &stat);
+	return stat.st_size;
+}
+
+static char *fileread(char *path)
+{
+	int fd = open(path, O_RDONLY);
+	int size = filesize(fd);
+	char *buf = malloc(size);
+	read(fd, buf, size);
+	close(fd);
+	return buf;
+}
+
+static void die(char *msg)
+{
+	write(1, msg, strlen(msg));
+	exit(1);
+}
+
+int main(int argc, char **argv)
+{
+	char *buf;
+	struct outelf oe;
+	int fd;
+	if (argc < 2)
+		die("no object given\n");
+	buf = fileread(argv[1]);
+	if (!buf)
+		die("cannot open object\n");
+	outelf_init(&oe);
+	outelf_link(&oe, buf);
+	fd = open("a.out", O_WRONLY | O_TRUNC | O_CREAT, 0700);
+	outelf_write(&oe, fd);
+	close(fd);
+	outelf_free(&oe);
+	return 0;
+}
