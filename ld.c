@@ -122,10 +122,17 @@ static unsigned long outelf_find(struct outelf *oe, char *name)
 static unsigned long symval(struct outelf *oe, struct obj *obj, Elf64_Sym *sym)
 {
 	struct secmap *sec;
+	char *name = obj->symstr + sym->st_name;
 	switch (ELF64_ST_TYPE(sym->st_info)) {
 	case STT_SECTION:
 		if ((sec = outelf_mapping(oe, &obj->shdr[sym->st_shndx])))
 			return sec->phdr->p_vaddr;
+		break;
+	case STT_NOTYPE:
+	case STT_OBJECT:
+	case STT_FUNC:
+		if (name && *name)
+			return outelf_find(oe, name);
 		break;
 	}
 	return 0;
@@ -136,21 +143,28 @@ static void outelf_reloc_sec(struct outelf *oe, int o_idx, int s_idx)
 	struct obj *obj = &oe->objs[o_idx];
 	Elf64_Shdr *rel_shdr = &obj->shdr[s_idx];
 	Elf64_Rela *rel = (void *) obj->mem + obj->shdr[s_idx].sh_offset;
-	void *other = (void *) obj->mem + obj->shdr[rel_shdr->sh_info].sh_offset;
+	Elf64_Shdr *other_shdr = &obj->shdr[rel_shdr->sh_info];
+	void *other = (void *) obj->mem + other_shdr->sh_offset;
 	int nrel = rel_shdr->sh_size / sizeof(*rel);
+	unsigned long addr;
 	int i;
 	for (i = 0; i < nrel; i++) {
 		int sym_idx = ELF64_R_SYM(rel[i].r_info);
 		Elf64_Sym *sym = &obj->syms[sym_idx];
+		unsigned long val = symval(oe, obj, sym);
 		char *name = obj->symstr + sym->st_name;
 		unsigned long *dst = other + rel[i].r_offset;
 		switch (ELF64_R_TYPE(rel[i].r_info)) {
 		case R_X86_64_32:
-			*(unsigned int *) dst = symval(oe, obj, sym) +
-						rel[i].r_addend;
+			*(unsigned int *) dst = val + rel[i].r_addend;
 			break;
 		case R_X86_64_64:
-			*dst = symval(oe, obj, sym) + rel[i].r_addend;
+			*dst = val + rel[i].r_addend;
+			break;
+		case R_X86_64_PC32:
+			addr = outelf_mapping(oe, other_shdr)->phdr->p_vaddr +
+				rel[i].r_offset;
+			*(unsigned int *) dst = val - addr + rel[i].r_addend - 4;
 			break;
 		}
 	}
@@ -214,7 +228,7 @@ static void outelf_link(struct outelf *oe, char *mem)
 		sec->phdr->p_memsz = shdr[i].sh_size;
 		sec->phdr->p_align = PAGESIZE;
 		oe->faddr += shdr[i].sh_size;
-		oe->vaddr += ALIGN(shdr[i].sh_size, PAGESIZE);
+		oe->vaddr += shdr[i].sh_size;
 	}
 }
 
