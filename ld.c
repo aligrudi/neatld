@@ -125,7 +125,6 @@ static struct secmap *outelf_mapping(struct outelf *oe, Elf64_Shdr *shdr)
 static int outelf_find(struct outelf *oe, char *name,
 			struct obj **sym_obj, Elf64_Sym **sym_sym)
 {
-	int s_idx, s_off;
 	int i;
 	for (i = 0; i < oe->nobjs; i++) {
 		struct obj *obj = &oe->objs[i];
@@ -145,6 +144,7 @@ static unsigned long bss_addr(struct outelf *oe, Elf64_Sym *sym)
 	for (i = 0; i < oe->nbss_syms; i++)
 		if (oe->bss_syms[i].sym == sym)
 			return oe->bss_addr + oe->bss_syms[i].off;
+	return 0;
 }
 
 static unsigned long symval(struct outelf *oe, struct obj *obj, Elf64_Sym *sym)
@@ -183,23 +183,12 @@ static unsigned long outelf_addr(struct outelf *oe, char *name)
 {
 	struct obj *obj;
 	Elf64_Sym *sym;
-	int s_idx, s_off;
-	struct secmap *sec;
 	if (outelf_find(oe, name, &obj, &sym))
 		die("unknown symbol!\n");
 	return symval(oe, obj, sym);
 }
 
-static void alloc_bss(struct outelf *oe, Elf64_Sym *sym)
-{
-	int n = oe->nbss_syms++;
-	int off = ALIGN(oe->bss_len, sym->st_value);
-	oe->bss_syms[n].sym = sym;
-	oe->bss_syms[n].off = off + sym->st_size;
-	oe->bss_len += off + sym->st_size;
-}
-
-static void got_offset(struct outelf *oe, struct obj *obj, Elf64_Sym *sym)
+static int got_offset(struct outelf *oe, struct obj *obj, Elf64_Sym *sym)
 {
 	char *name = obj->symstr + sym->st_name;
 	int n;
@@ -311,7 +300,6 @@ static int outelf_putgot(struct outelf *oe, char *buf)
 {
 	Elf64_Phdr *phdr = &oe->phdr[oe->nph++];
 	unsigned long *got = (void *) buf;
-	struct obj *obj;
 	int len = 8 * oe->ngot_syms;
 	int i;
 	for (i = 0; i < oe->ngot_syms; i++)
@@ -420,20 +408,25 @@ static int sym_undef(struct outelf *oe, char *name)
 	return undef;
 }
 
-static void outelf_ar_link(struct outelf *oe, unsigned char *ar, int base)
+static int outelf_ar_link(struct outelf *oe, char *ar, int base)
 {
-	unsigned char *ar_index;
-	unsigned char *ar_name;
-	int nsyms = get_be32(ar);
+	char *ar_index;
+	char *ar_name;
+	int nsyms = get_be32((void *) ar);
+	int added = 0;
 	int i;
 	ar_index = ar + 4;
 	ar_name = ar_index + nsyms * 4;
 	for (i = 0; i < nsyms; i++) {
-		int off = get_be32(ar_index + i * 4) + sizeof(struct arhdr);
-		if (sym_undef(oe, ar_name))
+		int off = get_be32((void *) ar_index + i * 4) +
+				sizeof(struct arhdr);
+		if (sym_undef(oe, ar_name)) {
 			outelf_link(oe, ar - base + off);
+			added++;
+		}
 		ar_name = strchr(ar_name, '\0') + 1;
 	}
+	return added;
 }
 
 static int startswith(char *s, char *r)
@@ -444,7 +437,6 @@ static int startswith(char *s, char *r)
 static void link_archive(struct outelf *oe, char *ar)
 {
 	char *beg = ar;
-	int i;
 
 	/* skip magic */
 	ar += 8;
@@ -456,7 +448,8 @@ static void link_archive(struct outelf *oe, char *ar)
 		size = atoi(hdr->ar_size);
 		size = (size + 1) & ~1;
 		if (startswith(hdr->ar_name, "/ ")) {
-			outelf_ar_link(oe, ar, ar - beg);
+			while (outelf_ar_link(oe, ar, ar - beg))
+				;
 			return;
 		} else if (startswith(hdr->ar_name, "// ") ||
 				startswith(hdr->ar_name, "__.SYMDEF ") ||
@@ -499,7 +492,7 @@ int main(int argc, char **argv)
 	char *buf;
 	struct outelf oe;
 	char *mem[MAXFILES];
-	int nmem;
+	int nmem = 0;
 	int fd;
 	int i = 0;
 	if (argc < 2)
