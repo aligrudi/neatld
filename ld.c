@@ -7,6 +7,7 @@
 
 #define MAXSECS		(1 << 10)
 #define MAXOBJS		(1 << 7)
+#define MAXSYMS		(1 << 12)
 #define PAGESIZE	(1 << 12)
 
 #define ALIGN(x,a)		__ALIGN_MASK(x,(typeof(x))(a)-1)
@@ -28,6 +29,11 @@ struct secmap {
 	struct obj *obj;
 };
 
+struct bss_sym {
+	Elf64_Sym *sym;
+	int off;
+};
+
 struct outelf {
 	Elf64_Ehdr ehdr;
 	Elf64_Phdr phdr[MAXSECS];
@@ -38,9 +44,15 @@ struct outelf {
 	int nobjs;
 	unsigned long faddr;
 	unsigned long vaddr;
+
+	/* bss section */
+	struct bss_sym bss_syms[MAXSYMS];
+	int nbss_syms;
+	unsigned long bss_addr;
+	int bss_len;
 };
 
-static int obj_find(struct obj *obj, char *name, int *s_idx, int *s_off)
+static Elf64_Sym *obj_find(struct obj *obj, char *name)
 {
 	int i;
 	for (i = 0; i < obj->nsyms; i++) {
@@ -48,13 +60,10 @@ static int obj_find(struct obj *obj, char *name, int *s_idx, int *s_off)
 		if (ELF64_ST_BIND(sym->st_info) == STB_LOCAL ||
 				sym->st_shndx == SHN_UNDEF)
 			continue;
-		if (!strcmp(name, obj->symstr + sym->st_name)) {
-			*s_idx = sym->st_shndx;
-			*s_off = sym->st_value;
-			return 0;
-		}
+		if (!strcmp(name, obj->symstr + sym->st_name))
+			return sym;
 	}
-	return 1;
+	return NULL;
 }
 
 static void obj_init(struct obj *obj, char *mem)
@@ -104,25 +113,36 @@ static struct secmap *outelf_mapping(struct outelf *oe, Elf64_Shdr *shdr)
 	return NULL;
 }
 
-static unsigned long outelf_find(struct outelf *oe, char *name)
+static int outelf_find(struct outelf *oe, char *name,
+			struct obj **sym_obj, Elf64_Sym **sym_sym)
 {
 	int s_idx, s_off;
 	int i;
 	for (i = 0; i < oe->nobjs; i++) {
 		struct obj *obj = &oe->objs[i];
-		if (!obj_find(obj, name, &s_idx, &s_off)) {
-			struct secmap *sec;
-			if ((sec = outelf_mapping(oe, &obj->shdr[s_idx])))
-				return sec->phdr->p_vaddr + s_off;
+		Elf64_Sym *sym;
+		if ((sym = obj_find(obj, name))) {
+			*sym_obj = obj;
+			*sym_sym = sym;
+			return 0;
 		}
 	}
-	return 0;
+	return 1;
+}
+
+static unsigned long bss_addr(struct outelf *oe, Elf64_Sym *sym)
+{
+	int i;
+	for (i = 0; i < oe->nbss_syms; i++)
+		if (oe->bss_syms[i].sym == sym)
+			return oe->bss_addr + oe->bss_syms[i].off;
 }
 
 static unsigned long symval(struct outelf *oe, struct obj *obj, Elf64_Sym *sym)
 {
 	struct secmap *sec;
 	char *name = obj->symstr + sym->st_name;
+	int s_idx, s_off;
 	switch (ELF64_ST_TYPE(sym->st_info)) {
 	case STT_SECTION:
 		if ((sec = outelf_mapping(oe, &obj->shdr[sym->st_shndx])))
@@ -131,11 +151,34 @@ static unsigned long symval(struct outelf *oe, struct obj *obj, Elf64_Sym *sym)
 	case STT_NOTYPE:
 	case STT_OBJECT:
 	case STT_FUNC:
-		if (name && *name)
-			return outelf_find(oe, name);
-		break;
+		if (name && *name && sym->st_shndx == SHN_UNDEF)
+			outelf_find(oe, name, &obj, &sym);
+		if (sym->st_shndx == SHN_COMMON)
+			return bss_addr(oe, sym);
+		s_idx = sym->st_shndx;
+		s_off = sym->st_value;
+		sec = outelf_mapping(oe, &obj->shdr[s_idx]);
+		if ((sec = outelf_mapping(oe, &obj->shdr[s_idx])))
+			return sec->phdr->p_vaddr + s_off;
 	}
 	return 0;
+}
+
+static void die(char *msg)
+{
+	write(1, msg, strlen(msg));
+	exit(1);
+}
+
+static unsigned long outelf_addr(struct outelf *oe, char *name)
+{
+	struct obj *obj;
+	Elf64_Sym *sym;
+	int s_idx, s_off;
+	struct secmap *sec;
+	if (outelf_find(oe, name, &obj, &sym))
+		die("unknown symbol!\n");
+	return symval(oe, obj, sym);
 }
 
 static void outelf_reloc_sec(struct outelf *oe, int o_idx, int s_idx)
@@ -151,21 +194,24 @@ static void outelf_reloc_sec(struct outelf *oe, int o_idx, int s_idx)
 	for (i = 0; i < nrel; i++) {
 		int sym_idx = ELF64_R_SYM(rel[i].r_info);
 		Elf64_Sym *sym = &obj->syms[sym_idx];
-		unsigned long val = symval(oe, obj, sym);
-		char *name = obj->symstr + sym->st_name;
+		unsigned long val = symval(oe, obj, sym) + rel[i].r_addend;
 		unsigned long *dst = other + rel[i].r_offset;
 		switch (ELF64_R_TYPE(rel[i].r_info)) {
+		case R_X86_64_NONE:
+			break;
 		case R_X86_64_32:
-			*(unsigned int *) dst = val + rel[i].r_addend;
+			*(unsigned int *) dst = val;
 			break;
 		case R_X86_64_64:
-			*dst = val + rel[i].r_addend;
+			*dst = val;
 			break;
 		case R_X86_64_PC32:
 			addr = outelf_mapping(oe, other_shdr)->phdr->p_vaddr +
 				rel[i].r_offset;
-			*(unsigned int *) dst = val - addr + rel[i].r_addend - 4;
+			*(unsigned int *) dst += val - addr;
 			break;
+		default:
+			die("unknown relocation type\n");
 		}
 	}
 }
@@ -181,10 +227,42 @@ static void outelf_reloc(struct outelf *oe)
 	}
 }
 
+static void alloc_bss(struct outelf *oe, Elf64_Sym *sym)
+{
+	int n = oe->nbss_syms++;
+	int off = ALIGN(oe->bss_len, sym->st_value);
+	oe->bss_syms[n].sym = sym;
+	oe->bss_syms[n].off = off + sym->st_size;
+	oe->bss_len += off + sym->st_size;
+}
+
+static void outelf_bss(struct outelf *oe)
+{
+	int i, j;
+	Elf64_Phdr *phdr = &oe->phdr[oe->nph++];
+	for (i = 0; i < oe->nobjs; i++) {
+		struct obj *obj = &oe->objs[i];
+		for (j = 0; j < obj->nsyms; j++)
+			if (obj->syms[j].st_shndx == SHN_COMMON)
+				alloc_bss(oe, &obj->syms[j]);
+	}
+	oe->bss_addr = oe->vaddr;
+	oe->vaddr = oe->vaddr + oe->bss_len;
+
+	phdr->p_type = PT_LOAD;
+	phdr->p_flags = PF_R | PF_W;
+	phdr->p_vaddr = oe->bss_addr;
+	phdr->p_paddr = oe->bss_addr;
+	phdr->p_offset = oe->faddr;
+	phdr->p_filesz = 0;
+	phdr->p_memsz = oe->bss_len;
+	phdr->p_align = PAGESIZE;
+}
+
 static void outelf_write(struct outelf *oe, int fd)
 {
 	int i;
-	oe->ehdr.e_entry = outelf_find(oe, "_start");
+	oe->ehdr.e_entry = outelf_addr(oe, "_start");
 
 	oe->ehdr.e_phnum = oe->nph;
 	oe->ehdr.e_phoff = oe->faddr;
@@ -222,13 +300,13 @@ static void outelf_link(struct outelf *oe, char *mem)
 		sec->phdr->p_type = PT_LOAD;
 		sec->phdr->p_flags = PF_R | PF_W | PF_X;
 		sec->phdr->p_vaddr = oe->vaddr;
-		sec->phdr->p_paddr = oe->vaddr;
+		sec->phdr->p_paddr = sec->phdr->p_vaddr;
 		sec->phdr->p_offset = oe->faddr;
 		sec->phdr->p_filesz = shdr[i].sh_size;
 		sec->phdr->p_memsz = shdr[i].sh_size;
 		sec->phdr->p_align = PAGESIZE;
-		oe->faddr += shdr[i].sh_size;
-		oe->vaddr += shdr[i].sh_size;
+		oe->faddr = sec->phdr->p_offset + sec->phdr->p_filesz;
+		oe->vaddr = sec->phdr->p_vaddr + sec->phdr->p_memsz;
 	}
 }
 
@@ -256,12 +334,6 @@ static char *fileread(char *path)
 	return buf;
 }
 
-static void die(char *msg)
-{
-	write(1, msg, strlen(msg));
-	exit(1);
-}
-
 int main(int argc, char **argv)
 {
 	char out[1 << 10] = "a.out";
@@ -284,6 +356,7 @@ int main(int argc, char **argv)
 		outelf_link(&oe, buf);
 	}
 	fd = open(out, O_WRONLY | O_TRUNC | O_CREAT, 0700);
+	outelf_bss(&oe);
 	outelf_reloc(&oe);
 	outelf_write(&oe, fd);
 	close(fd);
