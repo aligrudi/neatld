@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/stat.h>
+#include <string.h>
 #include <unistd.h>
 
 #define MAXSECS		(1 << 10)
@@ -232,6 +233,7 @@ static void outelf_reloc_sec(struct outelf *oe, int o_idx, int s_idx)
 		case R_X86_64_NONE:
 			break;
 		case R_X86_64_32:
+		case R_X86_64_32S:
 			*(unsigned int *) dst = val;
 			break;
 		case R_X86_64_64:
@@ -356,10 +358,11 @@ static void outelf_link(struct outelf *oe, char *mem)
 {
 	Elf64_Ehdr *ehdr = (void *) mem;
 	Elf64_Shdr *shdr = (void *) (mem + ehdr->e_shoff);
-	struct obj *obj = &oe->objs[oe->nobjs++];
+	struct obj *obj;
 	int i;
 	if (ehdr->e_type != ET_REL)
 		return;
+	obj = &oe->objs[oe->nobjs++];
 	obj_init(obj, mem);
 	for (i = 0; i < ehdr->e_shnum; i++) {
 		struct secmap *sec;
@@ -382,6 +385,91 @@ static void outelf_link(struct outelf *oe, char *mem)
 	}
 }
 
+struct arhdr {
+	char ar_name[16];
+	char ar_date[12];
+	char ar_uid[6];
+	char ar_gid[6];
+	char ar_mode[8];
+	char ar_size[10];
+	char ar_fmag[2];
+};
+
+static int get_be32(unsigned char *s)
+{
+	return s[3] | (s[2] << 8) | (s[1] << 16) | (s[0] << 32);
+}
+
+static int sym_undef(struct outelf *oe, char *name)
+{
+	int i, j;
+	int undef = 0;
+	for (i = 0; i < oe->nobjs; i++) {
+		struct obj *obj = &oe->objs[i];
+		for (j = 0; j < obj->nsyms; j++) {
+			Elf64_Sym *sym = &obj->syms[j];
+			if (ELF64_ST_BIND(sym->st_info) == STB_LOCAL)
+				continue;
+			if (strcmp(name, obj->symstr + sym->st_name))
+				continue;
+			if (sym->st_shndx != SHN_UNDEF)
+				return 0;
+			undef = 1;
+		}
+	}
+	return undef;
+}
+
+static void outelf_ar_link(struct outelf *oe, unsigned char *ar, int base)
+{
+	unsigned char *ar_index;
+	unsigned char *ar_name;
+	int nsyms = get_be32(ar);
+	int i;
+	ar_index = ar + 4;
+	ar_name = ar_index + nsyms * 4;
+	for (i = 0; i < nsyms; i++) {
+		int off = get_be32(ar_index + i * 4) + sizeof(struct arhdr);
+		if (sym_undef(oe, ar_name))
+			outelf_link(oe, ar - base + off);
+		ar_name = strchr(ar_name, '\0') + 1;
+	}
+}
+
+static int startswith(char *s, char *r)
+{
+	return !strncmp(s, r, strlen(r));
+}
+
+static void link_archive(struct outelf *oe, char *ar)
+{
+	char *beg = ar;
+	int i;
+
+	/* skip magic */
+	ar += 8;
+	for(;;) {
+		struct arhdr *hdr = (void *) ar;
+		int size;
+		ar += sizeof(*hdr);
+		hdr->ar_size[sizeof(hdr->ar_size) - 1] = '\0';
+		size = atoi(hdr->ar_size);
+		size = (size + 1) & ~1;
+		if (startswith(hdr->ar_name, "/ ")) {
+			outelf_ar_link(oe, ar, ar - beg);
+			return;
+		} else if (startswith(hdr->ar_name, "// ") ||
+				startswith(hdr->ar_name, "__.SYMDEF ") ||
+				startswith(hdr->ar_name, "__.SYMDEF/ ") ||
+				startswith(hdr->ar_name, "ARFILENAMES/ ")) {
+			/* skip symbol table or archive names */
+		} else {
+			outelf_link(oe, ar);
+		}
+		ar += size;
+	}
+}
+
 static long filesize(int fd)
 {
 	struct stat stat;
@@ -397,6 +485,12 @@ static char *fileread(char *path)
 	read(fd, buf, size);
 	close(fd);
 	return buf;
+}
+
+static int is_ar(char *path)
+{
+	int len = strlen(path);
+	return len > 2 && path[len - 2] == '.' && path[len - 1] == 'a';
 }
 
 int main(int argc, char **argv)
@@ -421,7 +515,10 @@ int main(int argc, char **argv)
 		mem[nmem++] = buf;
 		if (!buf)
 			die("cannot open object\n");
-		outelf_link(&oe, buf);
+		if (is_ar(argv[i]))
+			link_archive(&oe, buf);
+		else
+			outelf_link(&oe, buf);
 	}
 	fd = open(out, O_WRONLY | O_TRUNC | O_CREAT, 0700);
 	outelf_bss(&oe);
