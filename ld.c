@@ -10,6 +10,7 @@
 #define MAXSYMS		(1 << 12)
 #define PAGE_SIZE	(1 << 12)
 #define GOT_PAD		16
+#define MAXFILES	(1 << 10)
 
 #define ALIGN(x,a)		__ALIGN_MASK(x,(typeof(x))(a)-1)
 #define __ALIGN_MASK(x,mask)	(((x)+(mask))&~(mask))
@@ -381,13 +382,6 @@ static void outelf_link(struct outelf *oe, char *mem)
 	}
 }
 
-static void outelf_free(struct outelf *oe)
-{
-	int i;
-	for (i = 0; i < oe->nobjs; i++)
-		free(oe->objs[i].mem);
-}
-
 static long filesize(int fd)
 {
 	struct stat stat;
@@ -410,6 +404,8 @@ int main(int argc, char **argv)
 	char out[1 << 10] = "a.out";
 	char *buf;
 	struct outelf oe;
+	char *mem[MAXFILES];
+	int nmem;
 	int fd;
 	int i = 0;
 	if (argc < 2)
@@ -422,6 +418,7 @@ int main(int argc, char **argv)
 			continue;
 		}
 		buf = fileread(argv[i]);
+		mem[nmem++] = buf;
 		if (!buf)
 			die("cannot open object\n");
 		outelf_link(&oe, buf);
@@ -431,6 +428,7 @@ int main(int argc, char **argv)
 	outelf_reloc(&oe);
 	outelf_write(&oe, fd);
 	close(fd);
-	outelf_free(&oe);
+	for (i = 0; i < nmem; i++)
+		free(mem[i]);
 	return 0;
 }
