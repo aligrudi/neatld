@@ -461,11 +461,6 @@ static int outelf_ar_link(struct outelf *oe, char *ar, int base)
 	return added;
 }
 
-static int startswith(char *s, char *r)
-{
-	return !strncmp(s, r, strlen(r));
-}
-
 static void link_archive(struct outelf *oe, char *ar)
 {
 	char *beg = ar;
@@ -479,18 +474,13 @@ static void link_archive(struct outelf *oe, char *ar)
 		hdr->ar_size[sizeof(hdr->ar_size) - 1] = '\0';
 		size = atoi(hdr->ar_size);
 		size = (size + 1) & ~1;
-		if (startswith(hdr->ar_name, "/ ")) {
+		if (!strncmp(hdr->ar_name, "/ ", 2)) {
 			while (outelf_ar_link(oe, ar, ar - beg))
 				;
 			return;
-		} else if (startswith(hdr->ar_name, "// ") ||
-				startswith(hdr->ar_name, "__.SYMDEF ") ||
-				startswith(hdr->ar_name, "__.SYMDEF/ ") ||
-				startswith(hdr->ar_name, "ARFILENAMES/ ")) {
-			/* skip symbol table or archive names */
-		} else {
-			outelf_add(oe, ar);
 		}
+		if (!strncmp(hdr->ar_name, "// ", 3))
+			outelf_add(oe, ar);
 		ar += size;
 	}
 }
