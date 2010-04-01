@@ -1,3 +1,12 @@
+/*
+ * ld - a small static linker
+ *
+ * Copyright (C) 2010 Ali Gholami Rudi
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License, as published by the
+ * Free Software Foundation.
+ */
 #include <elf.h>
 #include <fcntl.h>
 #include <stdio.h>
