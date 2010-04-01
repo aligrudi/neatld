@@ -101,7 +101,6 @@ static void outelf_init(struct outelf *oe)
 	oe->ehdr.e_ident[4] = ELFCLASS64;
 	oe->ehdr.e_ident[5] = ELFDATA2LSB;
 	oe->ehdr.e_ident[6] = EV_CURRENT;
-	oe->ehdr.e_ident[7] = ELFOSABI_LINUX;
 	oe->ehdr.e_type = ET_EXEC;
 	oe->ehdr.e_machine = EM_X86_64;
 	oe->ehdr.e_version = EV_CURRENT;
@@ -326,8 +325,6 @@ static void outelf_write(struct outelf *oe, int fd)
 
 	oe->ehdr.e_phnum = oe->nph;
 	oe->ehdr.e_phoff = oe->faddr;
-	oe->ehdr.e_shnum = 0;
-	oe->ehdr.e_shoff = 0;
 	write(fd, &oe->ehdr, sizeof(oe->ehdr));
 	for (i = 0; i < oe->nsecs; i++) {
 		struct secmap *sec = &oe->secs[i];
