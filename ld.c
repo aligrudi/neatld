@@ -6,8 +6,9 @@
 #include <string.h>
 #include <unistd.h>
 
-#define BEGADDR		0x400000ul
+#define SRCADDR		0x400000ul
 #define BSSADDR		0x600000ul
+#define DATADDR		0x800000ul
 #define MAXSECS		(1 << 10)
 #define MAXOBJS		(1 << 7)
 #define MAXSYMS		(1 << 12)
@@ -30,8 +31,10 @@ struct obj {
 
 struct secmap {
 	Elf64_Shdr *o_shdr;
-	Elf64_Phdr *phdr;
 	struct obj *obj;
+	unsigned long vaddr;
+	unsigned long faddr;
+	int code;
 };
 
 struct bss_sym {
@@ -47,19 +50,20 @@ struct outelf {
 	int nsecs;
 	struct obj objs[MAXOBJS];
 	int nobjs;
-	unsigned long faddr;
-	unsigned long vaddr;
+
+	unsigned long code_addr;
+	unsigned long phdr_faddr;
 
 	/* bss section */
 	struct bss_sym bss_syms[MAXSYMS];
 	int nbss_syms;
-	unsigned long bss_addr;
+	unsigned long bss_vaddr;
 	int bss_len;
 
 	/* got/plt section */
 	Elf64_Sym *got_syms[MAXSYMS];
 	int ngot_syms;
-	unsigned long got_addr;
+	unsigned long got_vaddr;
 	unsigned long got_faddr;
 };
 
@@ -93,23 +97,6 @@ static void obj_init(struct obj *obj, char *mem)
 	}
 }
 
-static unsigned long vaddr(struct outelf *oe, int len)
-{
-	int fr = oe->faddr % PAGE_SIZE;
-	int vr = oe->vaddr % PAGE_SIZE;
-	oe->vaddr += len;
-	if (fr > vr)
-		return oe->vaddr - len + fr - vr;
-	else
-		return oe->vaddr - len - vr + PAGE_SIZE + fr;
-}
-
-static unsigned long faddr(struct outelf *oe, int len)
-{
-	oe->faddr += len;
-	return oe->faddr - len;
-}
-
 static void outelf_init(struct outelf *oe)
 {
 	memset(oe, 0, sizeof(*oe));
@@ -125,10 +112,8 @@ static void outelf_init(struct outelf *oe)
 	oe->ehdr.e_version = EV_CURRENT;
 	oe->ehdr.e_shstrndx = SHN_UNDEF;
 	oe->ehdr.e_ehsize = sizeof(oe->ehdr);
-	oe->faddr = sizeof(oe->ehdr);
 	oe->ehdr.e_phentsize = sizeof(oe->phdr[0]);
 	oe->ehdr.e_shentsize = sizeof(Elf64_Shdr);
-	oe->vaddr = BEGADDR;
 }
 
 static struct secmap *outelf_mapping(struct outelf *oe, Elf64_Shdr *shdr)
@@ -161,7 +146,7 @@ static unsigned long bss_addr(struct outelf *oe, Elf64_Sym *sym)
 	int i;
 	for (i = 0; i < oe->nbss_syms; i++)
 		if (oe->bss_syms[i].sym == sym)
-			return oe->bss_addr + oe->bss_syms[i].off;
+			return oe->bss_vaddr + oe->bss_syms[i].off;
 	return 0;
 }
 
@@ -173,7 +158,7 @@ static unsigned long symval(struct outelf *oe, struct obj *obj, Elf64_Sym *sym)
 	switch (ELF64_ST_TYPE(sym->st_info)) {
 	case STT_SECTION:
 		if ((sec = outelf_mapping(oe, &obj->shdr[sym->st_shndx])))
-			return sec->phdr->p_vaddr;
+			return sec->vaddr;
 		break;
 	case STT_NOTYPE:
 	case STT_OBJECT:
@@ -186,7 +171,7 @@ static unsigned long symval(struct outelf *oe, struct obj *obj, Elf64_Sym *sym)
 		s_off = sym->st_value;
 		sec = outelf_mapping(oe, &obj->shdr[s_idx]);
 		if ((sec = outelf_mapping(oe, &obj->shdr[s_idx])))
-			return sec->phdr->p_vaddr + s_off;
+			return sec->vaddr + s_off;
 	}
 	return 0;
 }
@@ -248,15 +233,15 @@ static void outelf_reloc_sec(struct outelf *oe, int o_idx, int s_idx)
 			break;
 		case R_X86_64_PC32:
 		case R_X86_64_PLT32:
-			addr = outelf_mapping(oe, other_shdr)->phdr->p_vaddr +
+			addr = outelf_mapping(oe, other_shdr)->vaddr +
 				rel[i].r_offset;
 			*(unsigned int *) dst += val - addr;
 			break;
 		case R_X86_64_GOTPCREL:
-			addr = outelf_mapping(oe, other_shdr)->phdr->p_vaddr +
+			addr = outelf_mapping(oe, other_shdr)->vaddr +
 				rel[i].r_offset;
-			val = got_offset(oe, obj, sym) + oe->got_addr +
-				rel[i].r_addend;
+			val = got_offset(oe, obj, sym) +
+				oe->got_vaddr + rel[i].r_addend;
 			*(unsigned int *) dst += val - addr;
 			break;
 		default:
@@ -268,10 +253,6 @@ static void outelf_reloc_sec(struct outelf *oe, int o_idx, int s_idx)
 static void outelf_reloc(struct outelf *oe)
 {
 	int i, j;
-	int len = oe->ngot_syms * 8 + GOT_PAD;
-	oe->got_addr = vaddr(oe, len);
-	oe->got_faddr = faddr(oe, len);
-
 	for (i = 0; i < oe->nobjs; i++) {
 		struct obj *obj = &oe->objs[i];
 		for (j = 0; j < obj->ehdr->e_shnum; j++)
@@ -292,41 +273,22 @@ static void alloc_bss(struct outelf *oe, Elf64_Sym *sym)
 static void outelf_bss(struct outelf *oe)
 {
 	int i, j;
-	Elf64_Phdr *phdr = &oe->phdr[oe->nph++];
 	for (i = 0; i < oe->nobjs; i++) {
 		struct obj *obj = &oe->objs[i];
 		for (j = 0; j < obj->nsyms; j++)
 			if (obj->syms[j].st_shndx == SHN_COMMON)
 				alloc_bss(oe, &obj->syms[j]);
 	}
-	oe->bss_addr = BSSADDR + oe->faddr % PAGE_SIZE;
-	phdr->p_type = PT_LOAD;
-	phdr->p_flags = PF_R | PF_W;
-	phdr->p_vaddr = oe->bss_addr;
-	phdr->p_paddr = oe->bss_addr;
-	phdr->p_offset = faddr(oe, 0);
-	phdr->p_filesz = 0;
-	phdr->p_memsz = oe->bss_len;
-	phdr->p_align = PAGE_SIZE;
 }
 
 static int outelf_putgot(struct outelf *oe, char *buf)
 {
-	Elf64_Phdr *phdr = &oe->phdr[oe->nph++];
 	unsigned long *got = (void *) buf;
 	int len = 8 * oe->ngot_syms;
 	int i;
 	for (i = 0; i < oe->ngot_syms; i++)
 		got[i] = symval(oe, NULL, oe->got_syms[i]);
 	memset(buf + len, 0, GOT_PAD);
-	phdr->p_type = PT_LOAD;
-	phdr->p_flags = PF_R | PF_W;
-	phdr->p_vaddr = oe->got_addr;
-	phdr->p_paddr = oe->got_addr;
-	phdr->p_offset = oe->got_faddr;
-	phdr->p_filesz = len;
-	phdr->p_memsz = len;
-	phdr->p_align = PAGE_SIZE;
 	return len + GOT_PAD;
 }
 
@@ -339,22 +301,22 @@ static void outelf_write(struct outelf *oe, int fd)
 	got_len = outelf_putgot(oe, buf);
 
 	oe->ehdr.e_phnum = oe->nph;
-	oe->ehdr.e_phoff = faddr(oe, 0);
+	oe->ehdr.e_phoff = oe->phdr_faddr;
 	write(fd, &oe->ehdr, sizeof(oe->ehdr));
 	for (i = 0; i < oe->nsecs; i++) {
 		struct secmap *sec = &oe->secs[i];
 		char *buf = sec->obj->mem + sec->o_shdr->sh_offset;
 		int len = sec->o_shdr->sh_size;
-		lseek(fd, sec->phdr->p_offset, SEEK_SET);
+		lseek(fd, sec->faddr, SEEK_SET);
 		write(fd, buf, len);
 	}
 	lseek(fd, oe->got_faddr, SEEK_SET);
 	write(fd, buf, got_len);
-	lseek(fd, oe->faddr, SEEK_SET);
+	lseek(fd, oe->phdr_faddr, SEEK_SET);
 	write(fd, &oe->phdr, oe->nph * sizeof(oe->phdr[0]));
 }
 
-static void outelf_link(struct outelf *oe, char *mem)
+static void outelf_add(struct outelf *oe, char *mem)
 {
 	Elf64_Ehdr *ehdr = (void *) mem;
 	Elf64_Shdr *shdr = (void *) (mem + ehdr->e_shoff);
@@ -370,17 +332,77 @@ static void outelf_link(struct outelf *oe, char *mem)
 			continue;
 		sec = &oe->secs[oe->nsecs++];
 		sec->o_shdr = &shdr[i];
-		sec->phdr = &oe->phdr[oe->nph++];
 		sec->obj = obj;
-		sec->phdr->p_type = PT_LOAD;
-		sec->phdr->p_flags = PF_R | PF_W | PF_X;
-		sec->phdr->p_paddr = sec->phdr->p_vaddr;
-		sec->phdr->p_filesz = shdr[i].sh_size;
-		sec->phdr->p_memsz = shdr[i].sh_size;
-		sec->phdr->p_align = PAGE_SIZE;
-		sec->phdr->p_vaddr = vaddr(oe, sec->phdr->p_memsz);
-		sec->phdr->p_offset = faddr(oe, sec->phdr->p_filesz);
+		sec->code = shdr[i].sh_flags & SHF_EXECINSTR;
 	}
+}
+
+static void outelf_link(struct outelf *oe)
+{
+	int i;
+	Elf64_Phdr *code_phdr = &oe->phdr[oe->nph++];
+	Elf64_Phdr *bss_phdr = &oe->phdr[oe->nph++];
+	Elf64_Phdr *data_phdr = &oe->phdr[oe->nph++];
+	unsigned long vaddr = SRCADDR + sizeof(oe->ehdr);
+	unsigned long faddr = sizeof(oe->ehdr);
+	int len = 0;
+	for (i = 0; i < oe->nsecs; i++) {
+		struct secmap *sec = &oe->secs[i];
+		if (!sec->code)
+			continue;
+		sec->vaddr = vaddr + len;
+		sec->faddr = faddr + len;
+		len += sec->o_shdr->sh_size;
+	}
+	code_phdr->p_type = PT_LOAD;
+	code_phdr->p_flags = PF_R | PF_W | PF_X;
+	code_phdr->p_vaddr = vaddr;
+	code_phdr->p_paddr = vaddr;
+	code_phdr->p_offset = faddr;
+	code_phdr->p_filesz = len;
+	code_phdr->p_memsz = len;
+	code_phdr->p_align = PAGE_SIZE;
+
+	faddr += len;
+	vaddr = BSSADDR + faddr % PAGE_SIZE;
+	len = 0;
+	outelf_bss(oe);
+	oe->bss_vaddr = vaddr + len;
+	bss_phdr->p_type = PT_LOAD;
+	bss_phdr->p_flags = PF_R | PF_W;
+	bss_phdr->p_vaddr = vaddr;
+	bss_phdr->p_paddr = vaddr;
+	bss_phdr->p_offset = faddr;
+	bss_phdr->p_filesz = 0;
+	bss_phdr->p_memsz = oe->bss_len;
+	bss_phdr->p_align = PAGE_SIZE;
+
+	faddr += len;
+	vaddr = DATADDR + faddr % PAGE_SIZE;
+	len = 0;
+	for (i = 0; i < oe->nsecs; i++) {
+		struct secmap *sec = &oe->secs[i];
+		if (sec->code)
+			continue;
+		sec->vaddr = vaddr + len;
+		sec->faddr = faddr + len;
+		len += sec->o_shdr->sh_size;
+	}
+	oe->got_faddr = faddr + len;
+	oe->got_vaddr = vaddr + len;
+	len += oe->ngot_syms * 8 + GOT_PAD;
+	outelf_reloc(oe);
+
+	data_phdr->p_type = PT_LOAD;
+	data_phdr->p_flags = PF_R | PF_W | PF_X;
+	data_phdr->p_align = PAGE_SIZE;
+	data_phdr->p_vaddr = vaddr;
+	data_phdr->p_paddr = vaddr;
+	data_phdr->p_filesz = len;
+	data_phdr->p_memsz = len;
+	data_phdr->p_offset = faddr;
+
+	oe->phdr_faddr = faddr + len;
 }
 
 struct arhdr {
@@ -431,7 +453,7 @@ static int outelf_ar_link(struct outelf *oe, char *ar, int base)
 		int off = get_be32((void *) ar_index + i * 4) +
 				sizeof(struct arhdr);
 		if (sym_undef(oe, ar_name)) {
-			outelf_link(oe, ar - base + off);
+			outelf_add(oe, ar - base + off);
 			added++;
 		}
 		ar_name = strchr(ar_name, '\0') + 1;
@@ -467,7 +489,7 @@ static void link_archive(struct outelf *oe, char *ar)
 				startswith(hdr->ar_name, "ARFILENAMES/ ")) {
 			/* skip symbol table or archive names */
 		} else {
-			outelf_link(oe, ar);
+			outelf_add(oe, ar);
 		}
 		ar += size;
 	}
@@ -521,11 +543,10 @@ int main(int argc, char **argv)
 		if (is_ar(argv[i]))
 			link_archive(&oe, buf);
 		else
-			outelf_link(&oe, buf);
+			outelf_add(&oe, buf);
 	}
+	outelf_link(&oe);
 	fd = open(out, O_WRONLY | O_TRUNC | O_CREAT, 0700);
-	outelf_bss(&oe);
-	outelf_reloc(&oe);
 	outelf_write(&oe, fd);
 	close(fd);
 	for (i = 0; i < nmem; i++)
