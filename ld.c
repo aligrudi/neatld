@@ -6,6 +6,8 @@
 #include <string.h>
 #include <unistd.h>
 
+#define BEGADDR		0x400000ul
+#define BSSADDR		0x600000ul
 #define MAXSECS		(1 << 10)
 #define MAXOBJS		(1 << 7)
 #define MAXSYMS		(1 << 12)
@@ -91,6 +93,23 @@ static void obj_init(struct obj *obj, char *mem)
 	}
 }
 
+static unsigned long vaddr(struct outelf *oe, int len)
+{
+	int fr = oe->faddr % PAGE_SIZE;
+	int vr = oe->vaddr % PAGE_SIZE;
+	oe->vaddr += len;
+	if (fr > vr)
+		return oe->vaddr - len + fr - vr;
+	else
+		return oe->vaddr - len - vr + PAGE_SIZE + fr;
+}
+
+static unsigned long faddr(struct outelf *oe, int len)
+{
+	oe->faddr += len;
+	return oe->faddr - len;
+}
+
 static void outelf_init(struct outelf *oe)
 {
 	memset(oe, 0, sizeof(*oe));
@@ -109,7 +128,7 @@ static void outelf_init(struct outelf *oe)
 	oe->faddr = sizeof(oe->ehdr);
 	oe->ehdr.e_phentsize = sizeof(oe->phdr[0]);
 	oe->ehdr.e_shentsize = sizeof(Elf64_Shdr);
-	oe->vaddr = 0x800000l + oe->faddr;
+	oe->vaddr = BEGADDR;
 }
 
 static struct secmap *outelf_mapping(struct outelf *oe, Elf64_Shdr *shdr)
@@ -250,10 +269,8 @@ static void outelf_reloc(struct outelf *oe)
 {
 	int i, j;
 	int len = oe->ngot_syms * 8 + GOT_PAD;
-	oe->got_addr = ALIGN(oe->vaddr, PAGE_SIZE) + oe->faddr % PAGE_SIZE;
-	oe->got_faddr = oe->faddr;
-	oe->vaddr = oe->vaddr + len;
-	oe->faddr = oe->faddr + len;
+	oe->got_addr = vaddr(oe, len);
+	oe->got_faddr = faddr(oe, len);
 
 	for (i = 0; i < oe->nobjs; i++) {
 		struct obj *obj = &oe->objs[i];
@@ -282,14 +299,12 @@ static void outelf_bss(struct outelf *oe)
 			if (obj->syms[j].st_shndx == SHN_COMMON)
 				alloc_bss(oe, &obj->syms[j]);
 	}
-	oe->bss_addr = oe->vaddr;
-	oe->vaddr = oe->vaddr + oe->bss_len;
-
+	oe->bss_addr = BSSADDR + oe->faddr % PAGE_SIZE;
 	phdr->p_type = PT_LOAD;
 	phdr->p_flags = PF_R | PF_W;
 	phdr->p_vaddr = oe->bss_addr;
 	phdr->p_paddr = oe->bss_addr;
-	phdr->p_offset = oe->faddr;
+	phdr->p_offset = faddr(oe, 0);
 	phdr->p_filesz = 0;
 	phdr->p_memsz = oe->bss_len;
 	phdr->p_align = PAGE_SIZE;
@@ -324,7 +339,7 @@ static void outelf_write(struct outelf *oe, int fd)
 	got_len = outelf_putgot(oe, buf);
 
 	oe->ehdr.e_phnum = oe->nph;
-	oe->ehdr.e_phoff = oe->faddr;
+	oe->ehdr.e_phoff = faddr(oe, 0);
 	write(fd, &oe->ehdr, sizeof(oe->ehdr));
 	for (i = 0; i < oe->nsecs; i++) {
 		struct secmap *sec = &oe->secs[i];
@@ -359,14 +374,12 @@ static void outelf_link(struct outelf *oe, char *mem)
 		sec->obj = obj;
 		sec->phdr->p_type = PT_LOAD;
 		sec->phdr->p_flags = PF_R | PF_W | PF_X;
-		sec->phdr->p_vaddr = oe->vaddr;
 		sec->phdr->p_paddr = sec->phdr->p_vaddr;
-		sec->phdr->p_offset = oe->faddr;
 		sec->phdr->p_filesz = shdr[i].sh_size;
 		sec->phdr->p_memsz = shdr[i].sh_size;
 		sec->phdr->p_align = PAGE_SIZE;
-		oe->faddr = sec->phdr->p_offset + sec->phdr->p_filesz;
-		oe->vaddr = sec->phdr->p_vaddr + sec->phdr->p_memsz;
+		sec->phdr->p_vaddr = vaddr(oe, sec->phdr->p_memsz);
+		sec->phdr->p_offset = faddr(oe, sec->phdr->p_filesz);
 	}
 }
 
