@@ -535,6 +535,8 @@ int main(int argc, char **argv)
 			strcpy(out, argv[++i]);
 			continue;
 		}
+		if (!strcmp("-g", argv[i]))
+			continue;
 		buf = fileread(argv[i]);
 		mem[nmem++] = buf;
 		if (!buf)
