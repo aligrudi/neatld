@@ -15,9 +15,9 @@
 #include <string.h>
 #include <unistd.h>
 
-#define SRCADDR		0x400000ul
-#define BSSADDR		0x600000ul
-#define DATADDR		0x800000ul
+#define SRCADDR		0x4000000ul
+#define DATADDR		0x6000000ul
+#define BSSADDR		0x8000000ul
 #define MAXSECS		(1 << 10)
 #define MAXOBJS		(1 << 7)
 #define MAXSYMS		(1 << 12)
@@ -43,7 +43,6 @@ struct secmap {
 	struct obj *obj;
 	unsigned long vaddr;
 	unsigned long faddr;
-	int code;
 };
 
 struct bss_sym {
@@ -308,6 +307,10 @@ static int outelf_putgot(struct outelf *oe, char *buf)
 	return len + GOT_PAD;
 }
 
+#define SEC_CODE(s)	((s)->sh_flags & SHF_EXECINSTR)
+#define SEC_BSS(s)	((s)->sh_type == SHT_NOBITS)
+#define SEC_DATA(s)	(!SEC_CODE(s) && !SEC_BSS(s))
+
 static void outelf_write(struct outelf *oe, int fd)
 {
 	int i;
@@ -323,6 +326,8 @@ static void outelf_write(struct outelf *oe, int fd)
 		struct secmap *sec = &oe->secs[i];
 		char *buf = sec->obj->mem + sec->o_shdr->sh_offset;
 		int len = sec->o_shdr->sh_size;
+		if (SEC_BSS(sec->o_shdr))
+			continue;
 		lseek(fd, sec->faddr, SEEK_SET);
 		write(fd, buf, len);
 	}
@@ -349,7 +354,6 @@ static void outelf_add(struct outelf *oe, char *mem)
 		sec = &oe->secs[oe->nsecs++];
 		sec->o_shdr = &shdr[i];
 		sec->obj = obj;
-		sec->code = shdr[i].sh_flags & SHF_EXECINSTR;
 	}
 }
 
@@ -364,7 +368,7 @@ static void outelf_link(struct outelf *oe)
 	int len = 0;
 	for (i = 0; i < oe->nsecs; i++) {
 		struct secmap *sec = &oe->secs[i];
-		if (!sec->code)
+		if (!SEC_CODE(sec->o_shdr))
 			continue;
 		sec->vaddr = vaddr + len;
 		sec->faddr = faddr + len;
@@ -384,21 +388,29 @@ static void outelf_link(struct outelf *oe)
 	len = 0;
 	outelf_bss(oe);
 	oe->bss_vaddr = vaddr + len;
+	len += oe->bss_len;
+	for (i = 0; i < oe->nsecs; i++) {
+		struct secmap *sec = &oe->secs[i];
+		if (!SEC_BSS(sec->o_shdr))
+			continue;
+		sec->vaddr = vaddr + len;
+		sec->faddr = faddr;
+		len += sec->o_shdr->sh_size;
+	}
 	bss_phdr->p_type = PT_LOAD;
 	bss_phdr->p_flags = PF_R | PF_W;
 	bss_phdr->p_vaddr = vaddr;
 	bss_phdr->p_paddr = vaddr;
 	bss_phdr->p_offset = faddr;
 	bss_phdr->p_filesz = 0;
-	bss_phdr->p_memsz = oe->bss_len;
+	bss_phdr->p_memsz = len;
 	bss_phdr->p_align = PAGE_SIZE;
 
-	faddr += len;
 	vaddr = DATADDR + faddr % PAGE_SIZE;
 	len = 0;
 	for (i = 0; i < oe->nsecs; i++) {
 		struct secmap *sec = &oe->secs[i];
-		if (sec->code)
+		if (!SEC_DATA(sec->o_shdr))
 			continue;
 		sec->vaddr = vaddr + len;
 		sec->faddr = faddr + len;
