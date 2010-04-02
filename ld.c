@@ -51,6 +51,11 @@ struct bss_sym {
 	int off;
 };
 
+struct got_sym {
+	Elf64_Sym *sym;
+	struct obj *obj;
+};
+
 struct outelf {
 	Elf64_Ehdr ehdr;
 	Elf64_Phdr phdr[MAXSECS];
@@ -70,7 +75,7 @@ struct outelf {
 	int bss_len;
 
 	/* got/plt section */
-	Elf64_Sym *got_syms[MAXSYMS];
+	struct got_sym got_syms[MAXSYMS];
 	int ngot_syms;
 	unsigned long got_vaddr;
 	unsigned long got_faddr;
@@ -208,10 +213,11 @@ static int got_offset(struct outelf *oe, struct obj *obj, Elf64_Sym *sym)
 	if (name && *name && sym->st_shndx == SHN_UNDEF)
 		outelf_find(oe, name, &obj, &sym);
 	for (i = 0; i < oe->ngot_syms; i++)
-		if (oe->got_syms[i] == sym)
+		if (oe->got_syms[i].sym == sym)
 			return i * 8;
 	n = oe->ngot_syms++;
-	oe->got_syms[n] = sym;
+	oe->got_syms[n].sym = sym;
+	oe->got_syms[n].obj = obj;
 	return n * 8;
 }
 
@@ -296,7 +302,8 @@ static int outelf_putgot(struct outelf *oe, char *buf)
 	int len = 8 * oe->ngot_syms;
 	int i;
 	for (i = 0; i < oe->ngot_syms; i++)
-		got[i] = symval(oe, NULL, oe->got_syms[i]);
+		got[i] = symval(oe, oe->got_syms[i].obj,
+				oe->got_syms[i].sym);
 	memset(buf + len, 0, GOT_PAD);
 	return len + GOT_PAD;
 }
