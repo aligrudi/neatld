@@ -370,6 +370,7 @@ static void outelf_link(struct outelf *oe)
 		struct secmap *sec = &oe->secs[i];
 		if (!SEC_CODE(sec->o_shdr))
 			continue;
+		len = ALIGN(vaddr + len, sec->o_shdr->sh_addralign) - vaddr;
 		sec->vaddr = vaddr + len;
 		sec->faddr = faddr + len;
 		len += sec->o_shdr->sh_size;
