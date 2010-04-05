@@ -1,4 +1,4 @@
-CC = dietcc
+CC = cc
 CFLAGS = -Wall -O2 -g
 LDFLAGS = -g
 
