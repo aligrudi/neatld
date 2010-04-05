@@ -393,6 +393,7 @@ static void outelf_link(struct outelf *oe)
 		struct secmap *sec = &oe->secs[i];
 		if (!SEC_BSS(sec->o_shdr))
 			continue;
+		len = ALIGN(vaddr + len, sec->o_shdr->sh_addralign) - vaddr;
 		sec->vaddr = vaddr + len;
 		sec->faddr = faddr;
 		len += sec->o_shdr->sh_size;
@@ -406,6 +407,7 @@ static void outelf_link(struct outelf *oe)
 	bss_phdr->p_memsz = len;
 	bss_phdr->p_align = PAGE_SIZE;
 
+	faddr = ALIGN(faddr, 8);
 	vaddr = DATADDR + faddr % PAGE_SIZE;
 	len = 0;
 	for (i = 0; i < oe->nsecs; i++) {
@@ -416,6 +418,7 @@ static void outelf_link(struct outelf *oe)
 		sec->faddr = faddr + len;
 		len += sec->o_shdr->sh_size;
 	}
+	len = ALIGN(len, 8);
 	oe->got_faddr = faddr + len;
 	oe->got_vaddr = vaddr + len;
 	outelf_reloc(oe);
