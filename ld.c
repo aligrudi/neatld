@@ -418,8 +418,8 @@ static void outelf_link(struct outelf *oe)
 	}
 	oe->got_faddr = faddr + len;
 	oe->got_vaddr = vaddr + len;
-	len += oe->ngot_syms * 8 + GOT_PAD;
 	outelf_reloc(oe);
+	len += oe->ngot_syms * 8 + GOT_PAD;
 
 	data_phdr->p_type = PT_LOAD;
 	data_phdr->p_flags = PF_R | PF_W | PF_X;
