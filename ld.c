@@ -24,6 +24,7 @@
 #define PAGE_SIZE	(1 << 12)
 #define GOT_PAD		16
 #define MAXFILES	(1 << 10)
+#define MAXPHDRS	4
 
 #define ALIGN(x,a)		__ALIGN_MASK(x,(typeof(x))(a)-1)
 #define __ALIGN_MASK(x,mask)	(((x)+(mask))&~(mask))
@@ -64,8 +65,8 @@ struct outelf {
 	struct obj objs[MAXOBJS];
 	int nobjs;
 
+	/* code section */
 	unsigned long code_addr;
-	unsigned long phdr_faddr;
 
 	/* bss section */
 	struct bss_sym bss_syms[MAXSYMS];
@@ -320,8 +321,10 @@ static void outelf_write(struct outelf *oe, int fd)
 	got_len = outelf_putgot(oe, buf);
 
 	oe->ehdr.e_phnum = oe->nph;
-	oe->ehdr.e_phoff = oe->phdr_faddr;
+	oe->ehdr.e_phoff = sizeof(oe->ehdr);
+	lseek(fd, 0, SEEK_SET);
 	write(fd, &oe->ehdr, sizeof(oe->ehdr));
+	write(fd, &oe->phdr, oe->nph * sizeof(oe->phdr[0]));
 	for (i = 0; i < oe->nsecs; i++) {
 		struct secmap *sec = &oe->secs[i];
 		char *buf = sec->obj->mem + sec->o_shdr->sh_offset;
@@ -333,8 +336,6 @@ static void outelf_write(struct outelf *oe, int fd)
 	}
 	lseek(fd, oe->got_faddr, SEEK_SET);
 	write(fd, buf, got_len);
-	lseek(fd, oe->phdr_faddr, SEEK_SET);
-	write(fd, &oe->phdr, oe->nph * sizeof(oe->phdr[0]));
 }
 
 static void outelf_add(struct outelf *oe, char *mem)
@@ -363,8 +364,8 @@ static void outelf_link(struct outelf *oe)
 	Elf64_Phdr *code_phdr = &oe->phdr[oe->nph++];
 	Elf64_Phdr *bss_phdr = &oe->phdr[oe->nph++];
 	Elf64_Phdr *data_phdr = &oe->phdr[oe->nph++];
-	unsigned long vaddr = SRCADDR + sizeof(oe->ehdr);
-	unsigned long faddr = sizeof(oe->ehdr);
+	unsigned long faddr = sizeof(oe->ehdr) + MAXPHDRS * sizeof(oe->phdr[0]);
+	unsigned long vaddr = SRCADDR + faddr % PAGE_SIZE;
 	int len = 0;
 	for (i = 0; i < oe->nsecs; i++) {
 		struct secmap *sec = &oe->secs[i];
@@ -433,8 +434,6 @@ static void outelf_link(struct outelf *oe)
 	data_phdr->p_filesz = len;
 	data_phdr->p_memsz = len;
 	data_phdr->p_offset = faddr;
-
-	oe->phdr_faddr = faddr + len;
 }
 
 struct arhdr {
