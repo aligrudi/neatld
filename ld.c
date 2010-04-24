@@ -26,8 +26,9 @@
 #define MAXFILES	(1 << 10)
 #define MAXPHDRS	4
 
-#define ALIGN(x,a)		__ALIGN_MASK(x,(typeof(x))(a)-1)
-#define __ALIGN_MASK(x,mask)	(((x)+(mask))&~(mask))
+#define MAX(a, b)		((a) > (b) ? (a) : (b))
+#define ALIGN(x,a)		__ALIGN_MASK(x, (typeof(x)) (MAX((a), 1)) - 1)
+#define __ALIGN_MASK(x,mask)	(((x) + (mask)) & ~(mask))
 
 struct obj {
 	char *mem;
