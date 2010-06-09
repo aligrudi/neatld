@@ -347,12 +347,16 @@ static void outelf_add(struct outelf *oe, char *mem)
 	int i;
 	if (ehdr->e_type != ET_REL)
 		return;
+	if (oe->nobjs >= MAXOBJS)
+		die("ld: MAXOBJS reached!\n");
 	obj = &oe->objs[oe->nobjs++];
 	obj_init(obj, mem);
 	for (i = 0; i < ehdr->e_shnum; i++) {
 		struct secmap *sec;
 		if (!(shdr[i].sh_flags & 0x7))
 			continue;
+		if (oe->nsecs >= MAXSECS)
+			die("ld: MAXSECS reached\n");
 		sec = &oe->secs[oe->nsecs++];
 		sec->o_shdr = &shdr[i];
 		sec->obj = obj;
