@@ -26,9 +26,8 @@
 #define MAXFILES	(1 << 10)
 #define MAXPHDRS	4
 
-#define MAX(a, b)		((a) > (b) ? (a) : (b))
-#define ALIGN(x,a)		__ALIGN_MASK(x, (typeof(x)) (MAX((a), 1)) - 1)
-#define __ALIGN_MASK(x,mask)	(((x) + (mask)) & ~(mask))
+#define MAX(a, b)	((a) > (b) ? (a) : (b))
+#define ALIGN(x, a)	(((x) + (long) (a) - 1) & ~((long) (a) - 1))
 
 struct obj {
 	char *mem;
@@ -280,7 +279,7 @@ static void outelf_reloc(struct outelf *oe)
 static void alloc_bss(struct outelf *oe, Elf64_Sym *sym)
 {
 	int n = oe->nbss_syms++;
-	int off = ALIGN(oe->bss_len, sym->st_value);
+	int off = ALIGN(oe->bss_len, MAX(sym->st_value, 8));
 	oe->bss_syms[n].sym = sym;
 	oe->bss_syms[n].off = off + sym->st_size;
 	oe->bss_len += off + sym->st_size;
@@ -374,9 +373,10 @@ static void outelf_link(struct outelf *oe)
 	int len = 0;
 	for (i = 0; i < oe->nsecs; i++) {
 		struct secmap *sec = &oe->secs[i];
+		int alignment = MAX(sec->o_shdr->sh_addralign, 8);
 		if (!SEC_CODE(sec->o_shdr))
 			continue;
-		len = ALIGN(vaddr + len, sec->o_shdr->sh_addralign) - vaddr;
+		len = ALIGN(vaddr + len, alignment) - vaddr;
 		sec->vaddr = vaddr + len;
 		sec->faddr = faddr + len;
 		len += sec->o_shdr->sh_size;
@@ -398,9 +398,10 @@ static void outelf_link(struct outelf *oe)
 	len += oe->bss_len;
 	for (i = 0; i < oe->nsecs; i++) {
 		struct secmap *sec = &oe->secs[i];
+		int alignment = MAX(sec->o_shdr->sh_addralign, 8);
 		if (!SEC_BSS(sec->o_shdr))
 			continue;
-		len = ALIGN(vaddr + len, sec->o_shdr->sh_addralign) - vaddr;
+		len = ALIGN(vaddr + len, alignment) - vaddr;
 		sec->vaddr = vaddr + len;
 		sec->faddr = faddr;
 		len += sec->o_shdr->sh_size;
