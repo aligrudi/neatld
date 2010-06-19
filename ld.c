@@ -241,7 +241,7 @@ static void outelf_reloc_sec(struct outelf *oe, int o_idx, int s_idx)
 			break;
 		case R_X86_64_32:
 		case R_X86_64_32S:
-			*(unsigned int *) dst = val;
+			*(unsigned int *) dst += val;
 			break;
 		case R_X86_64_64:
 			*dst = val;
