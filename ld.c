@@ -322,8 +322,8 @@ static void outelf_link(struct outelf *oe)
 {
 	int i;
 	Elf32_Phdr *code_phdr = &oe->phdr[oe->nph++];
-	Elf32_Phdr *bss_phdr = &oe->phdr[oe->nph++];
 	Elf32_Phdr *data_phdr = &oe->phdr[oe->nph++];
+	Elf32_Phdr *bss_phdr = &oe->phdr[oe->nph++];
 	unsigned long faddr = sizeof(oe->ehdr) + MAXPHDRS * sizeof(oe->phdr[0]);
 	unsigned long vaddr = SRCADDR + faddr % PAGE_SIZE;
 	int len = 0;
@@ -347,7 +347,28 @@ static void outelf_link(struct outelf *oe)
 	code_phdr->p_align = PAGE_SIZE;
 
 	faddr += len;
-	vaddr = BSSADDR + faddr % PAGE_SIZE;
+	vaddr = DATADDR ? DATADDR + faddr % PAGE_SIZE : vaddr + len;
+	len = 0;
+	for (i = 0; i < oe->nsecs; i++) {
+		struct secmap *sec = &oe->secs[i];
+		if (!SEC_DATA(sec->o_shdr))
+			continue;
+		sec->vaddr = vaddr + len;
+		sec->faddr = faddr + len;
+		len += sec->o_shdr->sh_size;
+	}
+	len = ALIGN(len, 4);
+	data_phdr->p_type = PT_LOAD;
+	data_phdr->p_flags = PF_R | PF_W | PF_X;
+	data_phdr->p_align = PAGE_SIZE;
+	data_phdr->p_vaddr = vaddr;
+	data_phdr->p_paddr = vaddr;
+	data_phdr->p_filesz = len;
+	data_phdr->p_memsz = len;
+	data_phdr->p_offset = faddr;
+
+	faddr += len;
+	vaddr = BSSADDR ? BSSADDR + faddr % PAGE_SIZE : vaddr + len;
 	len = 0;
 	outelf_bss(oe);
 	oe->bss_vaddr = vaddr + len;
@@ -371,28 +392,7 @@ static void outelf_link(struct outelf *oe)
 	bss_phdr->p_memsz = len;
 	bss_phdr->p_align = PAGE_SIZE;
 
-	faddr = ALIGN(faddr, 4);
-	vaddr = DATADDR + faddr % PAGE_SIZE;
-	len = 0;
-	for (i = 0; i < oe->nsecs; i++) {
-		struct secmap *sec = &oe->secs[i];
-		if (!SEC_DATA(sec->o_shdr))
-			continue;
-		sec->vaddr = vaddr + len;
-		sec->faddr = faddr + len;
-		len += sec->o_shdr->sh_size;
-	}
 	outelf_reloc(oe);
-
-	len = ALIGN(len, 4);
-	data_phdr->p_type = PT_LOAD;
-	data_phdr->p_flags = PF_R | PF_W | PF_X;
-	data_phdr->p_align = PAGE_SIZE;
-	data_phdr->p_vaddr = vaddr;
-	data_phdr->p_paddr = vaddr;
-	data_phdr->p_filesz = len;
-	data_phdr->p_memsz = len;
-	data_phdr->p_offset = faddr;
 }
 
 struct arhdr {
