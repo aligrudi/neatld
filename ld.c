@@ -22,7 +22,6 @@
 #define MAXOBJS		(1 << 7)
 #define MAXSYMS		(1 << 12)
 #define PAGE_SIZE	(1 << 12)
-#define GOT_PAD		16
 #define MAXFILES	(1 << 10)
 #define MAXPHDRS	4
 
@@ -51,11 +50,6 @@ struct bss_sym {
 	int off;
 };
 
-struct got_sym {
-	Elf32_Sym *sym;
-	struct obj *obj;
-};
-
 struct outelf {
 	Elf32_Ehdr ehdr;
 	Elf32_Phdr phdr[MAXSECS];
@@ -73,12 +67,6 @@ struct outelf {
 	int nbss_syms;
 	unsigned long bss_vaddr;
 	int bss_len;
-
-	/* got/plt section */
-	struct got_sym got_syms[MAXSYMS];
-	int ngot_syms;
-	unsigned long got_vaddr;
-	unsigned long got_faddr;
 };
 
 static Elf32_Sym *obj_find(struct obj *obj, char *name)
@@ -225,7 +213,7 @@ static void outelf_reloc_sec(struct outelf *oe, int o_idx, int s_idx)
 	unsigned long addr;
 	int i;
 	for (i = 0; i < nrels; i++) {
-		Elf32_Rela *rel = &rels[i];
+		Elf32_Rela *rel = (void *) &rels[i];
 		int sym_idx = ELF32_R_SYM(rel->r_info);
 		Elf32_Sym *sym = &obj->syms[sym_idx];
 		unsigned long val = symval(oe, obj, sym);
@@ -282,18 +270,6 @@ static void outelf_bss(struct outelf *oe)
 	}
 }
 
-static int outelf_putgot(struct outelf *oe, char *buf)
-{
-	unsigned long *got = (void *) buf;
-	int len = 4 * oe->ngot_syms;
-	int i;
-	for (i = 0; i < oe->ngot_syms; i++)
-		got[i] = symval(oe, oe->got_syms[i].obj,
-				oe->got_syms[i].sym);
-	memset(buf + len, 0, GOT_PAD);
-	return len + GOT_PAD;
-}
-
 #define SEC_CODE(s)	((s)->sh_flags & SHF_EXECINSTR)
 #define SEC_BSS(s)	((s)->sh_type == SHT_NOBITS)
 #define SEC_DATA(s)	(!SEC_CODE(s) && !SEC_BSS(s))
@@ -301,11 +277,7 @@ static int outelf_putgot(struct outelf *oe, char *buf)
 static void outelf_write(struct outelf *oe, int fd)
 {
 	int i;
-	char buf[1 << 14];
-	int got_len;
 	oe->ehdr.e_entry = outelf_addr(oe, "_start");
-	got_len = outelf_putgot(oe, buf);
-
 	oe->ehdr.e_phnum = oe->nph;
 	oe->ehdr.e_phoff = sizeof(oe->ehdr);
 	lseek(fd, 0, SEEK_SET);
@@ -320,8 +292,6 @@ static void outelf_write(struct outelf *oe, int fd)
 		lseek(fd, sec->faddr, SEEK_SET);
 		write(fd, buf, len);
 	}
-	lseek(fd, oe->got_faddr, SEEK_SET);
-	write(fd, buf, got_len);
 }
 
 static void outelf_add(struct outelf *oe, char *mem)
@@ -412,12 +382,9 @@ static void outelf_link(struct outelf *oe)
 		sec->faddr = faddr + len;
 		len += sec->o_shdr->sh_size;
 	}
-	len = ALIGN(len, 4);
-	oe->got_faddr = faddr + len;
-	oe->got_vaddr = vaddr + len;
 	outelf_reloc(oe);
-	len += oe->ngot_syms * 4 + GOT_PAD;
 
+	len = ALIGN(len, 4);
 	data_phdr->p_type = PT_LOAD;
 	data_phdr->p_flags = PF_R | PF_W | PF_X;
 	data_phdr->p_align = PAGE_SIZE;
@@ -440,7 +407,7 @@ struct arhdr {
 
 static int get_be32(unsigned char *s)
 {
-	return s[3] | (s[2] << 8) | (s[1] << 16) | (s[0] << 32);
+	return s[3] | (s[2] << 8) | (s[1] << 16) | (s[0] << 24);
 }
 
 static int sym_undef(struct outelf *oe, char *name)
