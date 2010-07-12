@@ -18,6 +18,7 @@
 #define SRCADDR		0x4000000ul
 #define DATADDR		0x6000000ul
 #define BSSADDR		0x8000000ul
+#define SECALIGN	(1 << 2)
 #define MAXSECS		(1 << 10)
 #define MAXOBJS		(1 << 7)
 #define MAXSYMS		(1 << 12)
@@ -26,7 +27,7 @@
 #define MAXPHDRS	4
 
 #define MAX(a, b)	((a) > (b) ? (a) : (b))
-#define ALIGN(x, a)	(((x) + (long) (a) - 1) & ~((long) (a) - 1))
+#define ALIGN(x, a)	(((x) + (a) - 1) & ~((a) - 1))
 
 struct obj {
 	char *mem;
@@ -325,8 +326,10 @@ static void outelf_link(struct outelf *oe)
 	Elf32_Phdr *data_phdr = &oe->phdr[oe->nph++];
 	Elf32_Phdr *bss_phdr = &oe->phdr[oe->nph++];
 	unsigned long faddr = sizeof(oe->ehdr) + MAXPHDRS * sizeof(oe->phdr[0]);
-	unsigned long vaddr = SRCADDR + faddr % PAGE_SIZE;
+	unsigned long vaddr;
 	int len = 0;
+	faddr = ALIGN(faddr, SECALIGN);
+	vaddr = SRCADDR + faddr % PAGE_SIZE;
 	for (i = 0; i < oe->nsecs; i++) {
 		struct secmap *sec = &oe->secs[i];
 		int alignment = MAX(sec->o_shdr->sh_addralign, 4);
@@ -346,6 +349,7 @@ static void outelf_link(struct outelf *oe)
 	code_phdr->p_memsz = len;
 	code_phdr->p_align = PAGE_SIZE;
 
+	len = ALIGN(faddr + len, SECALIGN) - faddr;
 	faddr += len;
 	vaddr = DATADDR ? DATADDR + faddr % PAGE_SIZE : vaddr + len;
 	len = 0;
@@ -367,6 +371,7 @@ static void outelf_link(struct outelf *oe)
 	data_phdr->p_memsz = len;
 	data_phdr->p_offset = faddr;
 
+	len = ALIGN(faddr + len, SECALIGN) - faddr;
 	faddr += len;
 	vaddr = BSSADDR ? BSSADDR + faddr % PAGE_SIZE : vaddr + len;
 	len = 0;
