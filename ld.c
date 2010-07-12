@@ -17,6 +17,7 @@
 #define DATADDR		0x6000000ul
 #define BSSADDR		0x8000000ul
 #define SECALIGN	(1 << 2)
+#define MKSYMTAB	1
 #define MAXSECS		(1 << 10)
 #define MAXOBJS		(1 << 7)
 #define MAXSYMS		(1 << 12)
@@ -66,6 +67,17 @@ struct outelf {
 	int nbss_syms;
 	unsigned long bss_vaddr;
 	int bss_len;
+
+	/* symtab section */
+	Elf32_Shdr shdr[MAXSECS];
+	int nsh;
+	char symstr[MAXSYMS];
+	Elf32_Sym syms[MAXSYMS];
+	int nsyms;
+	int nsymstr;
+	unsigned long shdr_faddr;
+	unsigned long syms_faddr;
+	unsigned long symstr_faddr;
 };
 
 static Elf32_Sym *obj_find(struct obj *obj, char *name)
@@ -273,10 +285,78 @@ static void outelf_bss(struct outelf *oe)
 #define SEC_BSS(s)	((s)->sh_type == SHT_NOBITS)
 #define SEC_DATA(s)	(!SEC_CODE(s) && !SEC_BSS(s))
 
+static char *putstr(char *d, char *s)
+{
+	while (*s)
+		*d++ = *s++;
+	*d++ = '\0';
+	return d;
+}
+
+static void build_symtab(struct outelf *oe)
+{
+	int i, j;
+	char *symstr = oe->symstr;
+	Elf32_Sym *syms = oe->syms;
+	Elf32_Shdr *sym_shdr = &oe->shdr[1];
+	Elf32_Shdr *str_shdr = &oe->shdr[2];
+	int n = 1;
+	char *s = putstr(symstr, "");
+	int faddr = oe->shdr_faddr;
+	oe->nsh = 3;
+	for (i = 0; i < oe->nobjs; i++) {
+		struct obj *obj = &oe->objs[i];
+		for (j = 0; j < obj->nsyms; j++) {
+			Elf32_Sym *sym = &obj->syms[j];
+			int type = ELF32_ST_TYPE(sym->st_info);
+			int bind = ELF32_ST_BIND(sym->st_info);
+			char *name = obj->symstr + sym->st_name;
+			if (!*name || bind == STB_LOCAL ||
+					sym->st_shndx == SHN_UNDEF)
+				continue;
+			syms[n].st_name = s - symstr;
+			s = putstr(s, name);
+			syms[n].st_info = ELF32_ST_INFO(bind, type);
+			syms[n].st_value = symval(oe, obj, sym);
+			syms[n].st_size = sym->st_size;
+			syms[n].st_shndx = SHN_ABS;
+			n++;
+		}
+	}
+	oe->nsymstr = s - symstr;
+	oe->nsyms = n;
+
+	oe->shdr_faddr = faddr;
+	faddr += oe->nsh * sizeof(oe->shdr[0]);
+	oe->syms_faddr = faddr;
+	faddr += oe->nsyms * sizeof(oe->syms[0]);
+	oe->symstr_faddr = faddr;
+	faddr += oe->nsymstr;
+
+	oe->ehdr.e_shstrndx = str_shdr - oe->shdr;
+	oe->ehdr.e_shoff = oe->shdr_faddr;
+	oe->ehdr.e_shnum = oe->nsh;
+
+	str_shdr->sh_name = 0;
+	str_shdr->sh_type = SHT_STRTAB;
+	str_shdr->sh_offset = oe->symstr_faddr;
+	str_shdr->sh_size = oe->nsymstr;
+
+	sym_shdr->sh_name = 0;
+	sym_shdr->sh_type = SHT_SYMTAB;
+	sym_shdr->sh_entsize = sizeof(oe->syms[0]);
+	sym_shdr->sh_offset = oe->syms_faddr;
+	sym_shdr->sh_size = oe->nsyms * sizeof(oe->syms[0]);
+	sym_shdr->sh_link = str_shdr - oe->shdr;
+	sym_shdr->sh_info = 0;
+}
+
 static void outelf_write(struct outelf *oe, int fd)
 {
 	int i;
 	oe->ehdr.e_entry = outelf_addr(oe, "_start");
+	if (MKSYMTAB)
+		build_symtab(oe);
 	oe->ehdr.e_phnum = oe->nph;
 	oe->ehdr.e_phoff = sizeof(oe->ehdr);
 	lseek(fd, 0, SEEK_SET);
@@ -290,6 +370,14 @@ static void outelf_write(struct outelf *oe, int fd)
 			continue;
 		lseek(fd, sec->faddr, SEEK_SET);
 		write(fd, buf, len);
+	}
+	if (MKSYMTAB) {
+		lseek(fd, oe->shdr_faddr, SEEK_SET);
+		write(fd, &oe->shdr, oe->nsh * sizeof(oe->shdr[0]));
+		lseek(fd, oe->syms_faddr, SEEK_SET);
+		write(fd, &oe->syms, oe->nsyms * sizeof(oe->syms[0]));
+		lseek(fd, oe->symstr_faddr, SEEK_SET);
+		write(fd, &oe->symstr, oe->nsymstr);
 	}
 }
 
@@ -396,6 +484,7 @@ static void outelf_link(struct outelf *oe)
 	bss_phdr->p_align = PAGE_SIZE;
 
 	outelf_reloc(oe);
+	oe->shdr_faddr = faddr;
 }
 
 struct arhdr {
