@@ -256,8 +256,8 @@ static void alloc_bss(struct outelf *oe, Elf32_Sym *sym)
 	int n = oe->nbss_syms++;
 	int off = ALIGN(oe->bss_len, MAX(sym->st_value, 4));
 	oe->bss_syms[n].sym = sym;
-	oe->bss_syms[n].off = off + sym->st_size;
-	oe->bss_len += off + sym->st_size;
+	oe->bss_syms[n].off = off;
+	oe->bss_len = off + sym->st_size;
 }
 
 static void outelf_bss(struct outelf *oe)
