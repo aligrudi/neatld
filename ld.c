@@ -17,7 +17,6 @@
 #define DATADDR		0x6000000ul
 #define BSSADDR		0x8000000ul
 #define SECALIGN	(1 << 2)
-#define MKSYMTAB	1
 #define MAXSECS		(1 << 10)
 #define MAXOBJS		(1 << 7)
 #define MAXSYMS		(1 << 12)
@@ -79,6 +78,8 @@ struct outelf {
 	unsigned long syms_faddr;
 	unsigned long symstr_faddr;
 };
+
+static int nosyms = 0;
 
 static Elf32_Sym *obj_find(struct obj *obj, char *name)
 {
@@ -355,7 +356,7 @@ static void outelf_write(struct outelf *oe, int fd)
 {
 	int i;
 	oe->ehdr.e_entry = outelf_addr(oe, "_start");
-	if (MKSYMTAB)
+	if (!nosyms)
 		build_symtab(oe);
 	oe->ehdr.e_phnum = oe->nph;
 	oe->ehdr.e_phoff = sizeof(oe->ehdr);
@@ -371,7 +372,7 @@ static void outelf_write(struct outelf *oe, int fd)
 		lseek(fd, sec->faddr, SEEK_SET);
 		write(fd, buf, len);
 	}
-	if (MKSYMTAB) {
+	if (!nosyms) {
 		lseek(fd, oe->shdr_faddr, SEEK_SET);
 		write(fd, &oe->shdr, oe->nsh * sizeof(oe->shdr[0]));
 		lseek(fd, oe->syms_faddr, SEEK_SET);
@@ -606,6 +607,10 @@ int main(int argc, char **argv)
 	while (++i < argc) {
 		if (!strcmp("-o", argv[i])) {
 			strcpy(out, argv[++i]);
+			continue;
+		}
+		if (!strcmp("-s", argv[i])) {
+			nosyms = 1;
 			continue;
 		}
 		if (!strcmp("-g", argv[i]))
