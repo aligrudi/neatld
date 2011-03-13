@@ -1,6 +1,6 @@
 CC = cc
-CFLAGS = -Wall -O2 -g
-LDFLAGS = -g
+CFLAGS = -Wall -Os
+LDFLAGS =
 
 all: ld
 .c.o:
