@@ -1,11 +1,9 @@
 /*
  * ld - a small static linker
  *
- * Copyright (C) 2010 Ali Gholami Rudi
+ * Copyright (C) 2010-2011 Ali Gholami Rudi
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License, as published by the
- * Free Software Foundation.
+ * This program is released under GNU GPL version 2.
  */
 #include <elf.h>
 #include <fcntl.h>
@@ -342,11 +340,11 @@ static void outelf_link(struct outelf *oe)
 	}
 	code_phdr->p_type = PT_LOAD;
 	code_phdr->p_flags = PF_R | PF_W | PF_X;
-	code_phdr->p_vaddr = vaddr;
-	code_phdr->p_paddr = vaddr;
-	code_phdr->p_offset = faddr;
-	code_phdr->p_filesz = len;
-	code_phdr->p_memsz = len;
+	code_phdr->p_vaddr = vaddr - faddr;
+	code_phdr->p_paddr = vaddr - faddr;
+	code_phdr->p_offset = faddr - faddr;
+	code_phdr->p_filesz = len + faddr;
+	code_phdr->p_memsz = len + faddr;
 	code_phdr->p_align = PAGE_SIZE;
 
 	len = ALIGN(faddr + len, SECALIGN) - faddr;
