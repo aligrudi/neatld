@@ -166,16 +166,14 @@ static unsigned long bss_addr(struct outelf *oe, Elf32_Sym *sym)
 
 static void die(char *msg)
 {
-	write(1, msg, strlen(msg));
+	fprintf(stderr, "%s\n", msg);
 	exit(1);
 }
 
-static void warn_undef(char *name)
+static void die_undef(char *name)
 {
-	char msg[128];
-	strcpy(msg, name);
-	strcpy(msg + strlen(msg), " undefined\n");
-	die(msg);
+	fprintf(stderr, "%s undefined\n", name);
+	exit(1);
 }
 
 static unsigned long symval(struct outelf *oe, struct obj *obj, Elf32_Sym *sym)
@@ -193,7 +191,7 @@ static unsigned long symval(struct outelf *oe, struct obj *obj, Elf32_Sym *sym)
 	case STT_FUNC:
 		if (name && *name && sym->st_shndx == SHN_UNDEF)
 			if (outelf_find(oe, name, &obj, &sym))
-				warn_undef(name);
+				die_undef(name);
 		if (sym->st_shndx == SHN_COMMON)
 			return bss_addr(oe, sym);
 		s_idx = sym->st_shndx;
@@ -210,7 +208,7 @@ static unsigned long outelf_addr(struct outelf *oe, char *name)
 	struct obj *obj;
 	Elf32_Sym *sym;
 	if (outelf_find(oe, name, &obj, &sym))
-		die("unknown symbol!\n");
+		die_undef(name);
 	return symval(oe, obj, sym);
 }
 
