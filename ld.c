@@ -13,14 +13,16 @@
 #include <string.h>
 #include <unistd.h>
 
-#define SRCADDR		0x4000000ul
-#define DATADDR		0x6000000ul
-#define BSSADDR		0x8000000ul
+#define LOC_CS		0x4000000ul
+#define LOC_DS		0x6000000ul
+#define LOC_BSS		0x8000000ul
+
 #define SECALIGN	(1 << 2)
 #define MAXSECS		(1 << 10)
 #define MAXOBJS		(1 << 7)
 #define MAXSYMS		(1 << 12)
 #define PAGE_SIZE	(1 << 12)
+#define PAGE_MASK	(PAGE_SIZE - 1)
 #define MAXFILES	(1 << 10)
 #define MAXPHDRS	4
 
@@ -410,11 +412,12 @@ static void outelf_link(struct outelf *oe)
 	Elf32_Phdr *code_phdr = &oe->phdr[oe->nph++];
 	Elf32_Phdr *data_phdr = &oe->phdr[oe->nph++];
 	Elf32_Phdr *bss_phdr = &oe->phdr[oe->nph++];
+	int hdrlen;
 	unsigned long faddr = sizeof(oe->ehdr) + MAXPHDRS * sizeof(oe->phdr[0]);
 	unsigned long vaddr;
 	int len = 0;
 	faddr = ALIGN(faddr, SECALIGN);
-	vaddr = SRCADDR + faddr % PAGE_SIZE;
+	vaddr = LOC_CS | (faddr & PAGE_MASK);
 	for (i = 0; i < oe->nsecs; i++) {
 		struct secmap *sec = &oe->secs[i];
 		int alignment = MAX(sec->o_shdr->sh_addralign, 4);
@@ -425,18 +428,19 @@ static void outelf_link(struct outelf *oe)
 		sec->faddr = faddr + len;
 		len += sec->o_shdr->sh_size;
 	}
+	hdrlen = SECALIGN < PAGE_SIZE ? faddr : 0;
 	code_phdr->p_type = PT_LOAD;
 	code_phdr->p_flags = PF_R | PF_W | PF_X;
-	code_phdr->p_vaddr = vaddr - faddr;
-	code_phdr->p_paddr = vaddr - faddr;
-	code_phdr->p_offset = faddr - faddr;
-	code_phdr->p_filesz = len + faddr;
-	code_phdr->p_memsz = len + faddr;
+	code_phdr->p_vaddr = vaddr - hdrlen;
+	code_phdr->p_paddr = vaddr - hdrlen;
+	code_phdr->p_offset = faddr - hdrlen;
+	code_phdr->p_filesz = len + hdrlen;
+	code_phdr->p_memsz = len + hdrlen;
 	code_phdr->p_align = PAGE_SIZE;
 
 	len = ALIGN(faddr + len, SECALIGN) - faddr;
 	faddr += len;
-	vaddr = DATADDR ? DATADDR + faddr % PAGE_SIZE : vaddr + len;
+	vaddr = LOC_DS ? LOC_DS | (faddr & PAGE_MASK) : vaddr + len;
 	len = 0;
 	for (i = 0; i < oe->nsecs; i++) {
 		struct secmap *sec = &oe->secs[i];
@@ -458,7 +462,7 @@ static void outelf_link(struct outelf *oe)
 
 	len = ALIGN(faddr + len, SECALIGN) - faddr;
 	faddr += len;
-	vaddr = BSSADDR ? BSSADDR + faddr % PAGE_SIZE : vaddr + len;
+	vaddr = LOC_BSS ? LOC_BSS | (faddr & PAGE_MASK) : vaddr + len;
 	len = 0;
 	outelf_bss(oe);
 	oe->bss_vaddr = vaddr + len;
