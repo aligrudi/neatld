@@ -5,6 +5,7 @@
  *
  * This program is released under GNU GPL version 2.
  */
+#include <ctype.h>
 #include <elf.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -13,11 +14,15 @@
 #include <string.h>
 #include <unistd.h>
 
-#define LOC_CS		0x4000000ul
-#define LOC_DS		0x6000000ul
-#define LOC_BSS		0x8000000ul
+#define I_CS		0
+#define I_DS		1
+#define I_BSS		2
 
-#define SECALIGN	(1 << 2)
+static unsigned long sec_vaddr[3] = {0x800000};	/* virtual address of sections */
+static unsigned long sec_laddr[3] = {0x800000};	/* load address of sections */
+static int sec_set[3] = {1};			/* set address for section */
+static int secalign = 16;			/* section alignment */
+
 #define MAXSECS		(1 << 10)
 #define MAXOBJS		(1 << 7)
 #define MAXSYMS		(1 << 12)
@@ -406,18 +411,10 @@ static void outelf_add(struct outelf *oe, char *mem)
 	}
 }
 
-static void outelf_link(struct outelf *oe)
+static int link_cs(struct outelf *oe, Elf32_Phdr *phdr, unsigned long faddr,
+			unsigned long vaddr, unsigned long laddr, int len)
 {
 	int i;
-	Elf32_Phdr *code_phdr = &oe->phdr[oe->nph++];
-	Elf32_Phdr *data_phdr = &oe->phdr[oe->nph++];
-	Elf32_Phdr *bss_phdr = &oe->phdr[oe->nph++];
-	int hdrlen;
-	unsigned long faddr = sizeof(oe->ehdr) + MAXPHDRS * sizeof(oe->phdr[0]);
-	unsigned long vaddr;
-	int len = 0;
-	faddr = ALIGN(faddr, SECALIGN);
-	vaddr = LOC_CS | (faddr & PAGE_MASK);
 	for (i = 0; i < oe->nsecs; i++) {
 		struct secmap *sec = &oe->secs[i];
 		int alignment = MAX(sec->o_shdr->sh_addralign, 4);
@@ -428,20 +425,22 @@ static void outelf_link(struct outelf *oe)
 		sec->faddr = faddr + len;
 		len += sec->o_shdr->sh_size;
 	}
-	hdrlen = SECALIGN < PAGE_SIZE ? faddr : 0;
-	code_phdr->p_type = PT_LOAD;
-	code_phdr->p_flags = PF_R | PF_W | PF_X;
-	code_phdr->p_vaddr = vaddr - hdrlen;
-	code_phdr->p_paddr = vaddr - hdrlen;
-	code_phdr->p_offset = faddr - hdrlen;
-	code_phdr->p_filesz = len + hdrlen;
-	code_phdr->p_memsz = len + hdrlen;
-	code_phdr->p_align = PAGE_SIZE;
+	phdr->p_type = PT_LOAD;
+	phdr->p_flags = PF_R | PF_W | PF_X;
+	phdr->p_vaddr = vaddr;
+	phdr->p_paddr = laddr;
+	phdr->p_offset = faddr;
+	phdr->p_filesz = len;
+	phdr->p_memsz = len;
+	phdr->p_align = PAGE_SIZE;
+	return len;
+}
 
-	len = ALIGN(faddr + len, SECALIGN) - faddr;
-	faddr += len;
-	vaddr = LOC_DS ? LOC_DS | (faddr & PAGE_MASK) : vaddr + len;
-	len = 0;
+static int link_ds(struct outelf *oe, Elf32_Phdr *phdr, unsigned long faddr,
+			unsigned long vaddr, unsigned long laddr)
+{
+	int len = 0;
+	int i;
 	for (i = 0; i < oe->nsecs; i++) {
 		struct secmap *sec = &oe->secs[i];
 		if (!SEC_DATA(sec->o_shdr))
@@ -451,22 +450,21 @@ static void outelf_link(struct outelf *oe)
 		len += sec->o_shdr->sh_size;
 	}
 	len = ALIGN(len, 4);
-	data_phdr->p_type = PT_LOAD;
-	data_phdr->p_flags = PF_R | PF_W | PF_X;
-	data_phdr->p_align = PAGE_SIZE;
-	data_phdr->p_vaddr = vaddr;
-	data_phdr->p_paddr = vaddr;
-	data_phdr->p_filesz = len;
-	data_phdr->p_memsz = len;
-	data_phdr->p_offset = faddr;
+	phdr->p_type = PT_LOAD;
+	phdr->p_flags = PF_R | PF_W | PF_X;
+	phdr->p_align = PAGE_SIZE;
+	phdr->p_vaddr = vaddr;
+	phdr->p_paddr = laddr;
+	phdr->p_filesz = len;
+	phdr->p_memsz = len;
+	phdr->p_offset = faddr;
+	return len;
+}
 
-	len = ALIGN(faddr + len, SECALIGN) - faddr;
-	faddr += len;
-	vaddr = LOC_BSS ? LOC_BSS | (faddr & PAGE_MASK) : vaddr + len;
-	len = 0;
-	outelf_bss(oe);
-	oe->bss_vaddr = vaddr + len;
-	len += oe->bss_len;
+static int link_bss(struct outelf *oe, Elf32_Phdr *phdr,
+			unsigned long faddr, unsigned long vaddr, int len)
+{
+	int i;
 	for (i = 0; i < oe->nsecs; i++) {
 		struct secmap *sec = &oe->secs[i];
 		int alignment = MAX(sec->o_shdr->sh_addralign, 4);
@@ -477,15 +475,41 @@ static void outelf_link(struct outelf *oe)
 		sec->faddr = faddr;
 		len += sec->o_shdr->sh_size;
 	}
-	bss_phdr->p_type = PT_LOAD;
-	bss_phdr->p_flags = PF_R | PF_W;
-	bss_phdr->p_vaddr = vaddr;
-	bss_phdr->p_paddr = vaddr;
-	bss_phdr->p_offset = faddr;
-	bss_phdr->p_filesz = 0;
-	bss_phdr->p_memsz = len;
-	bss_phdr->p_align = PAGE_SIZE;
+	phdr->p_type = PT_LOAD;
+	phdr->p_flags = PF_R | PF_W;
+	phdr->p_vaddr = vaddr;
+	phdr->p_paddr = vaddr;
+	phdr->p_offset = faddr;
+	phdr->p_filesz = 0;
+	phdr->p_memsz = len;
+	phdr->p_align = PAGE_SIZE;
+	return len;
+}
 
+static void outelf_link(struct outelf *oe)
+{
+	unsigned long faddr, vaddr, laddr;
+	int len;
+	len = ALIGN(sizeof(oe->ehdr) + MAXPHDRS * sizeof(oe->phdr[0]), secalign);
+	faddr = len & ~PAGE_MASK;
+	vaddr = sec_vaddr[I_CS];
+	laddr = sec_laddr[I_CS];
+	len = link_cs(oe, &oe->phdr[0], faddr, vaddr, laddr, len & PAGE_MASK);
+
+	len = ALIGN(faddr + len, secalign) - faddr;
+	faddr += len;
+	vaddr = sec_set[I_DS] ? sec_vaddr[I_DS] | (faddr & PAGE_MASK) : vaddr + len;
+	laddr = sec_set[I_DS] ? sec_laddr[I_DS] | (faddr & PAGE_MASK) : laddr + len;
+	len = link_ds(oe, &oe->phdr[1], faddr, vaddr, laddr);
+
+	len = ALIGN(faddr + len, secalign) - faddr;
+	faddr += len;
+	vaddr = sec_set[I_BSS] ? sec_vaddr[I_BSS] | (faddr & PAGE_MASK) : vaddr + len;
+	outelf_bss(oe);
+	oe->bss_vaddr = vaddr;
+	len = link_bss(oe, &oe->phdr[2], faddr, vaddr, oe->bss_len);
+
+	oe->nph = 3;
 	outelf_reloc(oe);
 	oe->shdr_faddr = faddr;
 }
@@ -546,7 +570,7 @@ static int outelf_ar_link(struct outelf *oe, char *ar, int base)
 	return added;
 }
 
-static void link_archive(struct outelf *oe, char *ar)
+static void outelf_archive(struct outelf *oe, char *ar)
 {
 	char *beg = ar;
 
@@ -593,6 +617,31 @@ static int is_ar(char *path)
 	return len > 2 && path[len - 2] == '.' && path[len - 1] == 'a';
 }
 
+unsigned long hexnum(char *s)
+{
+	unsigned long n = 0;
+	if (s[0] == '0' && s[1] == 'x')
+		s += 2;
+	for (; isdigit(*s) || isalpha(*s); s++) {
+		n <<= 4;
+		n |= isdigit(*s) ? *s - '0' : tolower(*s) - 'a' + 10;
+	}
+	return n;
+}
+
+static void set_addr(int sec, char *arg)
+{
+	int idx = I_CS;
+	char *sep = strchr(arg, ':');
+	if (sec == 'd')
+		idx = I_DS;
+	if (sec == 'b')
+		idx = I_BSS;
+	sec_vaddr[idx] = hexnum(arg);
+	sec_laddr[idx] = sep ? hexnum(sep + 1) : sec_vaddr[idx];
+	sec_set[idx] = 1;
+}
+
 int main(int argc, char **argv)
 {
 	char out[1 << 10] = "a.out";
@@ -607,24 +656,37 @@ int main(int argc, char **argv)
 	outelf_init(&oe);
 
 	while (++i < argc) {
-		if (!strcmp("-o", argv[i])) {
-			strcpy(out, argv[++i]);
+		if (argv[i][0] != '-') {
+			buf = fileread(argv[i]);
+			mem[nmem++] = buf;
+			if (!buf)
+				die("cannot open object\n");
+			if (is_ar(argv[i]))
+				outelf_archive(&oe, buf);
+			else
+				outelf_add(&oe, buf);
 			continue;
 		}
-		if (!strcmp("-s", argv[i])) {
+		if (argv[i][1] == 'o') {
+			strcpy(out, argv[i][2] ? argv[i] + 2 : argv[++i]);
+			continue;
+		}
+		if (argv[i][1] == 's') {
 			nosyms = 1;
 			continue;
 		}
-		if (!strcmp("-g", argv[i]))
+		if (argv[i][1] == 'g')
 			continue;
-		buf = fileread(argv[i]);
-		mem[nmem++] = buf;
-		if (!buf)
-			die("cannot open object\n");
-		if (is_ar(argv[i]))
-			link_archive(&oe, buf);
-		else
-			outelf_add(&oe, buf);
+		if (argv[i][1] == 'm') {
+			char sec = argv[i][2];
+			char *arg = argv[i][3] == '=' ? argv[i] + 4 : argv[++i];
+			set_addr(sec, arg);
+			continue;
+		}
+		if (argv[i][1] == 'p') {
+			secalign = PAGE_SIZE;
+			continue;
+		}
 	}
 	outelf_link(&oe);
 	fd = open(out, O_WRONLY | O_TRUNC | O_CREAT, 0700);
