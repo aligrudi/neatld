@@ -1,0 +1,50 @@
+.TH NEATLD 1 
+.SH NAME
+neatld \- the neatld static linker
+.SH SYNOPSIS
+.B ld
+[
+.I options
+]
+.I objfile ...
+.br
+.SH DESCRIPTION
+neatld links the given object and archive files into an executable
+file.  Options are:
+.TP
+.BI -o " out"
+Write the output to the given file instead of
+.I a.out.
+.TP
+.BI -l lib
+Link with library
+.IR lib .
+.TP
+.BI -L libdir
+Search
+.IR libdir
+for finding libraries specified with
+.B -l.
+.TP
+.BI -s
+Do not include a symbol table.
+.TP
+.BI -mX=vaddr:laddr
+Set the virtual/load address of a section.
+.I X
+defines the section and can be
+.I c
+for code section,
+.I d
+for data section and
+.I b
+for BSS section.
+.IR laddr
+can be omitted in which case it would be the same as
+.IR vaddr .
+.TP
+.BI -p
+Page-align sections.
+.SH "SEE ALSO"
+.IR neatcc (1),
+.IR neatas (1)
