@@ -360,7 +360,8 @@ static void build_symtab(struct outelf *oe)
 static void outelf_write(struct outelf *oe, int fd)
 {
 	int i;
-	oe->ehdr.e_entry = outelf_addr(oe, "_start");
+	oe->ehdr.e_entry = outelf_addr(oe, "_start") -
+				sec_vaddr[I_CS] + sec_laddr[I_CS];
 	if (!nosyms)
 		build_symtab(oe);
 	oe->ehdr.e_phnum = oe->nph;
