@@ -579,17 +579,18 @@ static void outelf_archive(struct outelf *oe, char *ar)
 	ar += 8;
 	for(;;) {
 		struct arhdr *hdr = (void *) ar;
+		char *name = hdr->ar_name;
 		int size;
 		ar += sizeof(*hdr);
 		hdr->ar_size[sizeof(hdr->ar_size) - 1] = '\0';
 		size = atoi(hdr->ar_size);
 		size = (size + 1) & ~1;
-		if (!strncmp(hdr->ar_name, "/ ", 2)) {
+		if (name[0] == '/' && name[1] == ' ') {
 			while (outelf_ar_link(oe, ar, ar - beg))
 				;
 			return;
 		}
-		if (!strncmp(hdr->ar_name, "// ", 3))
+		if (name[0] == '/' && name[1] == '/' && name[2] == ' ')
 			outelf_add(oe, ar);
 		ar += size;
 	}
