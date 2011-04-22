@@ -251,7 +251,7 @@ static void outelf_reloc_sec(struct outelf *oe, int o_idx, int s_idx)
 			*dst += val - addr;
 			break;
 		default:
-			die("unknown relocation type\n");
+			die("unknown relocation type");
 		}
 	}
 }
@@ -396,7 +396,7 @@ static void outelf_add(struct outelf *oe, char *mem)
 	if (ehdr->e_type != ET_REL)
 		return;
 	if (oe->nobjs >= MAXOBJS)
-		die("ld: MAXOBJS reached!\n");
+		die("ld: MAXOBJS reached!");
 	obj = &oe->objs[oe->nobjs++];
 	obj_init(obj, mem);
 	for (i = 0; i < ehdr->e_shnum; i++) {
@@ -404,7 +404,7 @@ static void outelf_add(struct outelf *oe, char *mem)
 		if (!(shdr[i].sh_flags & 0x7))
 			continue;
 		if (oe->nsecs >= MAXSECS)
-			die("ld: MAXSECS reached\n");
+			die("ld: MAXSECS reached");
 		sec = &oe->secs[oe->nsecs++];
 		sec->o_shdr = &shdr[i];
 		sec->obj = obj;
@@ -617,6 +617,24 @@ static int is_ar(char *path)
 	return len > 2 && path[len - 2] == '.' && path[len - 1] == 'a';
 }
 
+#define LIBDIRS		(1 << 5)
+#define PATHLEN		(1 << 8)
+
+static char *libdirs[LIBDIRS] = {"/lib"};
+static int nlibdirs = 1;
+
+static int lib_find(char *path, char *lib)
+{
+	struct stat st;
+	int i;
+	for (i = 0; i < nlibdirs; i++) {
+		sprintf(path, "%s/lib%s.a", libdirs[i], lib);
+		if (!stat(path, &st))
+			return 0;
+	}
+	return 1;
+}
+
 unsigned long hexnum(char *s)
 {
 	unsigned long n = 0;
@@ -642,29 +660,44 @@ static void set_addr(int sec, char *arg)
 	sec_set[idx] = 1;
 }
 
+static char *obj_add(struct outelf *oe, char *path)
+{
+	char *buf = fileread(path);
+	if (!buf)
+		die("cannot open object");
+	if (is_ar(path))
+		outelf_archive(oe, buf);
+	else
+		outelf_add(oe, buf);
+	return buf;
+}
+
 int main(int argc, char **argv)
 {
-	char out[1 << 10] = "a.out";
-	char *buf;
+	char out[PATHLEN] = "a.out";
 	struct outelf oe;
 	char *mem[MAXFILES];
 	int nmem = 0;
 	int fd;
 	int i = 0;
 	if (argc < 2)
-		die("no object given\n");
+		die("no object given");
 	outelf_init(&oe);
 
 	while (++i < argc) {
 		if (argv[i][0] != '-') {
-			buf = fileread(argv[i]);
-			mem[nmem++] = buf;
-			if (!buf)
-				die("cannot open object\n");
-			if (is_ar(argv[i]))
-				outelf_archive(&oe, buf);
-			else
-				outelf_add(&oe, buf);
+			mem[nmem++] = obj_add(&oe, argv[i]);
+			continue;
+		}
+		if (argv[i][1] == 'l') {
+			char path[PATHLEN];
+			if (lib_find(path, argv[i] + 2))
+				die("cannot find library");
+			mem[nmem++] = obj_add(&oe, path);
+			continue;
+		}
+		if (argv[i][1] == 'L') {
+			libdirs[nlibdirs++] = argv[i][2] ? argv[i] + 2 : argv[++i];
 			continue;
 		}
 		if (argv[i][1] == 'o') {
