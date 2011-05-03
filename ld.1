@@ -29,7 +29,7 @@ for finding libraries specified with
 .BI -s
 Do not include a symbol table.
 .TP
-.BI -mX=vaddr:laddr
+.BI -m X=vaddr:laddr
 Set the virtual/load address of a section.
 .I X
 defines the section and can be
@@ -45,6 +45,9 @@ can be omitted in which case it would be the same as
 .TP
 .BI -p
 Page-align sections.
+.TP
+.BI -e sym
+Entry point symbol.
 .SH "SEE ALSO"
 .IR neatcc (1),
 .IR neatas (1)

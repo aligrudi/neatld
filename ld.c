@@ -22,6 +22,7 @@ static unsigned long sec_vaddr[3] = {0x800000};	/* virtual address of sections *
 static unsigned long sec_laddr[3] = {0x800000};	/* load address of sections */
 static int sec_set[3] = {1};			/* set address for section */
 static int secalign = 16;			/* section alignment */
+static char *entry = "_start";			/* entry symbol */
 
 #define MAXSECS		(1 << 10)
 #define MAXOBJS		(1 << 7)
@@ -360,7 +361,7 @@ static void build_symtab(struct outelf *oe)
 static void outelf_write(struct outelf *oe, int fd)
 {
 	int i;
-	oe->ehdr.e_entry = outelf_addr(oe, "_start") -
+	oe->ehdr.e_entry = outelf_addr(oe, entry) -
 				sec_vaddr[I_CS] + sec_laddr[I_CS];
 	if (!nosyms)
 		build_symtab(oe);
@@ -720,6 +721,10 @@ int main(int argc, char **argv)
 		}
 		if (argv[i][1] == 'p') {
 			secalign = PAGE_SIZE;
+			continue;
+		}
+		if (argv[i][1] == 'e') {
+			entry = argv[i][2] ? argv[i] + 2 : argv[++i];
 			continue;
 		}
 	}
