@@ -1,11 +1,11 @@
 CC = cc
-CFLAGS = -Wall -Os
+CFLAGS = -Wall -O2
 LDFLAGS =
 
-all: ld
+all: nld
 .c.o:
 	$(CC) -c $(CFLAGS) $<
-ld: ld.o
+nld: nld.o
 	$(CC) $(LDFLAGS) -o $@ $^
 clean:
-	rm -f ld *.o
+	rm -f nld *.o
