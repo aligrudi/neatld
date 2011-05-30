@@ -1,6 +1,6 @@
 .TH NEATLD 1 
 .SH NAME
-neatld \- the neatld static linker
+neatld \- the neatld ARM/X86 static linker
 .SH SYNOPSIS
 .B nld
 [
@@ -10,7 +10,8 @@ neatld \- the neatld static linker
 .br
 .SH DESCRIPTION
 neatld links the given object and archive files into an executable
-file.  Options are:
+file.  The architecture of the output is determined based on the
+architecture of input files.  Options are:
 .TP
 .BI -o " out"
 Write the output to the given file instead of

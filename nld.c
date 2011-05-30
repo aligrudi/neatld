@@ -1,5 +1,5 @@
 /*
- * ld - a small static linker
+ * ld - a small arm/x86 static linker
  *
  * Copyright (C) 2010-2011 Ali Gholami Rudi
  *
@@ -23,6 +23,7 @@ static unsigned long sec_laddr[3] = {0x800000};	/* load address of sections */
 static int sec_set[3] = {1};			/* set address for section */
 static int secalign = 16;			/* section alignment */
 static char *entry = "_start";			/* entry symbol */
+static int isarm;				/* output arm binary */
 
 #define MAXSECS		(1 << 10)
 #define MAXOBJS		(1 << 7)
@@ -130,7 +131,6 @@ static void outelf_init(struct outelf *oe)
 	oe->ehdr.e_ident[5] = ELFDATA2LSB;
 	oe->ehdr.e_ident[6] = EV_CURRENT;
 	oe->ehdr.e_type = ET_EXEC;
-	oe->ehdr.e_machine = EM_386;
 	oe->ehdr.e_version = EV_CURRENT;
 	oe->ehdr.e_shstrndx = SHN_UNDEF;
 	oe->ehdr.e_ehsize = sizeof(oe->ehdr);
@@ -220,6 +220,8 @@ static unsigned long outelf_addr(struct outelf *oe, char *name)
 	return symval(oe, obj, sym);
 }
 
+#define ARM_REL		0x10000
+
 static void outelf_reloc_sec(struct outelf *oe, int o_idx, int s_idx)
 {
 	struct obj *obj = &oe->objs[o_idx];
@@ -236,20 +238,31 @@ static void outelf_reloc_sec(struct outelf *oe, int o_idx, int s_idx)
 		Elf32_Sym *sym = &obj->syms[sym_idx];
 		unsigned long val = symval(oe, obj, sym);
 		unsigned long *dst = other + rel->r_offset;
-		switch (ELF32_R_TYPE(rel->r_info)) {
+		switch ((isarm ? ARM_REL : 0) | ELF32_R_TYPE(rel->r_info)) {
+		case R_ARM_NONE | ARM_REL:
 		case R_386_NONE:
 			break;
+		case R_ARM_ABS16 | ARM_REL:
 		case R_386_16:
 			*(unsigned short *) dst += val;
 			break;
+		case R_ARM_ABS32 | ARM_REL:
 		case R_386_32:
 			*dst += val;
 			break;
+		case R_ARM_REL32 | ARM_REL:
+		case R_ARM_PLT32 | ARM_REL:
 		case R_386_PC32:
 		case R_386_PLT32:
 			addr = outelf_mapping(oe, other_shdr)->vaddr +
 				rel->r_offset;
 			*dst += val - addr;
+			break;
+		case R_ARM_PC24 | ARM_REL:
+			addr = outelf_mapping(oe, other_shdr)->vaddr +
+				rel->r_offset;
+			*dst = (*dst & 0xff000000) |
+					((*dst + ((val - addr) >> 2)) & 0x00ffffff);
 			break;
 		default:
 			die("unknown relocation type");
@@ -367,6 +380,7 @@ static void outelf_write(struct outelf *oe, int fd)
 		build_symtab(oe);
 	oe->ehdr.e_phnum = oe->nph;
 	oe->ehdr.e_phoff = sizeof(oe->ehdr);
+	oe->ehdr.e_machine = isarm ? EM_ARM : EM_386;
 	lseek(fd, 0, SEEK_SET);
 	write(fd, &oe->ehdr, sizeof(oe->ehdr));
 	write(fd, &oe->phdr, oe->nph * sizeof(oe->phdr[0]));
@@ -397,6 +411,7 @@ static void outelf_add(struct outelf *oe, char *mem)
 	int i;
 	if (ehdr->e_type != ET_REL)
 		return;
+	isarm = ehdr->e_machine == EM_ARM;
 	if (oe->nobjs >= MAXOBJS)
 		die("ld: MAXOBJS reached!");
 	obj = &oe->objs[oe->nobjs++];
@@ -638,7 +653,7 @@ static int lib_find(char *path, char *lib)
 	return 1;
 }
 
-unsigned long hexnum(char *s)
+static unsigned long hexnum(char *s)
 {
 	unsigned long n = 0;
 	if (s[0] == '0' && s[1] == 'x')
