@@ -23,7 +23,8 @@ static unsigned long sec_laddr[3] = {0x800000};	/* load address of sections */
 static int sec_set[3] = {1};			/* set address for section */
 static int secalign = 16;			/* section alignment */
 static char *entry = "_start";			/* entry symbol */
-static int isarm;				/* output arm binary */
+static int e_machine;				/* target machine */
+static int e_flags;				/* elf ehdr flags */
 
 #define MAXSECS		(1 << 10)
 #define MAXOBJS		(1 << 7)
@@ -36,31 +37,60 @@ static int isarm;				/* output arm binary */
 #define MAX(a, b)	((a) > (b) ? (a) : (b))
 #define ALIGN(x, a)	(((x) + (a) - 1) & ~((a) - 1))
 
+/* simplifed elf struct and macro names */
+#ifdef __x86_64__
+#  define Elf_Phdr	Elf64_Phdr
+#  define Elf_Ehdr	Elf64_Ehdr
+#  define Elf_Shdr	Elf64_Shdr
+#  define Elf_Sym	Elf64_Sym
+#  define Elf_Rela	Elf64_Rela
+#  define SHT_REL_	SHT_RELA
+#  define REL_ADDEND(r)	((r)->r_addend)
+#  define ELF_ST_INFO	ELF64_ST_INFO
+#  define ELF_ST_BIND	ELF64_ST_BIND
+#  define ELF_R_SYM	ELF64_R_SYM
+#  define ELF_R_TYPE	ELF64_R_TYPE
+#  define ELF_ST_TYPE	ELF64_ST_TYPE
+#else
+#  define Elf_Phdr	Elf32_Phdr
+#  define Elf_Ehdr	Elf32_Ehdr
+#  define Elf_Shdr	Elf32_Shdr
+#  define Elf_Sym	Elf32_Sym
+#  define Elf_Rela	Elf32_Rel
+#  define SHT_REL_	SHT_REL
+#  define REL_ADDEND(r)	(0)
+#  define ELF_ST_INFO	ELF32_ST_INFO
+#  define ELF_ST_BIND	ELF32_ST_BIND
+#  define ELF_R_SYM	ELF32_R_SYM
+#  define ELF_R_TYPE	ELF32_R_TYPE
+#  define ELF_ST_TYPE	ELF32_ST_TYPE
+#endif
+
 struct obj {
 	char *mem;
-	Elf32_Ehdr *ehdr;
-	Elf32_Shdr *shdr;
-	Elf32_Sym *syms;
+	Elf_Ehdr *ehdr;
+	Elf_Shdr *shdr;
+	Elf_Sym *syms;
 	int nsyms;
 	char *symstr;
 	char *shstr;
 };
 
 struct secmap {
-	Elf32_Shdr *o_shdr;
+	Elf_Shdr *o_shdr;
 	struct obj *obj;
 	unsigned long vaddr;
 	unsigned long faddr;
 };
 
 struct bss_sym {
-	Elf32_Sym *sym;
+	Elf_Sym *sym;
 	int off;
 };
 
 struct outelf {
-	Elf32_Ehdr ehdr;
-	Elf32_Phdr phdr[MAXSECS];
+	Elf_Ehdr ehdr;
+	Elf_Phdr phdr[MAXSECS];
 	int nph;
 	struct secmap secs[MAXSECS];
 	int nsecs;
@@ -77,10 +107,10 @@ struct outelf {
 	int bss_len;
 
 	/* symtab section */
-	Elf32_Shdr shdr[MAXSECS];
+	Elf_Shdr shdr[MAXSECS];
 	int nsh;
 	char symstr[MAXSYMS];
-	Elf32_Sym syms[MAXSYMS];
+	Elf_Sym syms[MAXSYMS];
 	int nsyms;
 	int nsymstr;
 	unsigned long shdr_faddr;
@@ -90,12 +120,12 @@ struct outelf {
 
 static int nosyms = 0;
 
-static Elf32_Sym *obj_find(struct obj *obj, char *name)
+static Elf_Sym *obj_find(struct obj *obj, char *name)
 {
 	int i;
 	for (i = 0; i < obj->nsyms; i++) {
-		Elf32_Sym *sym = &obj->syms[i];
-		if (ELF32_ST_BIND(sym->st_info) == STB_LOCAL ||
+		Elf_Sym *sym = &obj->syms[i];
+		if (ELF_ST_BIND(sym->st_info) == STB_LOCAL ||
 				sym->st_shndx == SHN_UNDEF)
 			continue;
 		if (!strcmp(name, obj->symstr + sym->st_name))
@@ -127,7 +157,7 @@ static void outelf_init(struct outelf *oe)
 	oe->ehdr.e_ident[1] = 'E';
 	oe->ehdr.e_ident[2] = 'L';
 	oe->ehdr.e_ident[3] = 'F';
-	oe->ehdr.e_ident[4] = ELFCLASS32;
+	oe->ehdr.e_ident[4] = sizeof(long) == 8 ? ELFCLASS64 : ELFCLASS32;
 	oe->ehdr.e_ident[5] = ELFDATA2LSB;
 	oe->ehdr.e_ident[6] = EV_CURRENT;
 	oe->ehdr.e_type = ET_EXEC;
@@ -135,10 +165,10 @@ static void outelf_init(struct outelf *oe)
 	oe->ehdr.e_shstrndx = SHN_UNDEF;
 	oe->ehdr.e_ehsize = sizeof(oe->ehdr);
 	oe->ehdr.e_phentsize = sizeof(oe->phdr[0]);
-	oe->ehdr.e_shentsize = sizeof(Elf32_Shdr);
+	oe->ehdr.e_shentsize = sizeof(Elf_Shdr);
 }
 
-static struct secmap *outelf_mapping(struct outelf *oe, Elf32_Shdr *shdr)
+static struct secmap *outelf_mapping(struct outelf *oe, Elf_Shdr *shdr)
 {
 	int i;
 	for (i = 0; i < oe->nsecs; i++)
@@ -148,12 +178,12 @@ static struct secmap *outelf_mapping(struct outelf *oe, Elf32_Shdr *shdr)
 }
 
 static int outelf_find(struct outelf *oe, char *name,
-			struct obj **sym_obj, Elf32_Sym **sym_sym)
+			struct obj **sym_obj, Elf_Sym **sym_sym)
 {
 	int i;
 	for (i = 0; i < oe->nobjs; i++) {
 		struct obj *obj = &oe->objs[i];
-		Elf32_Sym *sym;
+		Elf_Sym *sym;
 		if ((sym = obj_find(obj, name))) {
 			*sym_obj = obj;
 			*sym_sym = sym;
@@ -163,7 +193,7 @@ static int outelf_find(struct outelf *oe, char *name,
 	return 1;
 }
 
-static unsigned long bss_addr(struct outelf *oe, Elf32_Sym *sym)
+static unsigned long bss_addr(struct outelf *oe, Elf_Sym *sym)
 {
 	int i;
 	for (i = 0; i < oe->nbss_syms; i++)
@@ -184,12 +214,12 @@ static void die_undef(char *name)
 	exit(1);
 }
 
-static unsigned long symval(struct outelf *oe, struct obj *obj, Elf32_Sym *sym)
+static unsigned long symval(struct outelf *oe, struct obj *obj, Elf_Sym *sym)
 {
 	struct secmap *sec;
 	char *name = obj ? obj->symstr + sym->st_name : NULL;
 	int s_idx, s_off;
-	switch (ELF32_ST_TYPE(sym->st_info)) {
+	switch (ELF_ST_TYPE(sym->st_info)) {
 	case STT_SECTION:
 		if ((sec = outelf_mapping(oe, &obj->shdr[sym->st_shndx])))
 			return sec->vaddr;
@@ -214,51 +244,71 @@ static unsigned long symval(struct outelf *oe, struct obj *obj, Elf32_Sym *sym)
 static unsigned long outelf_addr(struct outelf *oe, char *name)
 {
 	struct obj *obj;
-	Elf32_Sym *sym;
+	Elf_Sym *sym;
 	if (outelf_find(oe, name, &obj, &sym))
 		die_undef(name);
 	return symval(oe, obj, sym);
 }
 
-#define ARM_REL		0x10000
+#define REL_ARM		0x10000
+#define REL_X64		0x20000
+#define REL_X86		0x40000
+
+static int arch_rel(int r)
+{
+	if (e_machine == EM_ARM)
+		return REL_ARM | r;
+	if (e_machine == EM_X86_64)
+		return REL_X64 | r;
+	if (e_machine == EM_386)
+		return REL_X86 | r;
+	return 0;
+}
 
 static void outelf_reloc_sec(struct outelf *oe, int o_idx, int s_idx)
 {
 	struct obj *obj = &oe->objs[o_idx];
-	Elf32_Shdr *rel_shdr = &obj->shdr[s_idx];
-	Elf32_Rel *rels = (void *) obj->mem + obj->shdr[s_idx].sh_offset;
-	Elf32_Shdr *other_shdr = &obj->shdr[rel_shdr->sh_info];
+	Elf_Shdr *rel_shdr = &obj->shdr[s_idx];
+	Elf_Rela *rels = (void *) obj->mem + obj->shdr[s_idx].sh_offset;
+	Elf_Shdr *other_shdr = &obj->shdr[rel_shdr->sh_info];
 	void *other = (void *) obj->mem + other_shdr->sh_offset;
 	int nrels = rel_shdr->sh_size / sizeof(*rels);
 	unsigned long addr;
 	int i;
 	for (i = 0; i < nrels; i++) {
-		Elf32_Rela *rel = (void *) &rels[i];
-		int sym_idx = ELF32_R_SYM(rel->r_info);
-		Elf32_Sym *sym = &obj->syms[sym_idx];
-		unsigned long val = symval(oe, obj, sym);
+		Elf_Rela *rel = (void *) &rels[i];
+		int sym_idx = ELF_R_SYM(rel->r_info);
+		Elf_Sym *sym = &obj->syms[sym_idx];
+		unsigned long val = symval(oe, obj, sym) + REL_ADDEND(rel);
 		unsigned long *dst = other + rel->r_offset;
-		switch ((isarm ? ARM_REL : 0) | ELF32_R_TYPE(rel->r_info)) {
-		case R_ARM_NONE | ARM_REL:
-		case R_386_NONE:
+		switch (arch_rel(ELF_R_TYPE(rel->r_info))) {
+		case REL_ARM | R_ARM_NONE:
+		case REL_X86 | R_386_NONE:
+		case REL_X64 | R_X86_64_NONE:
 			break;
-		case R_ARM_ABS16 | ARM_REL:
-		case R_386_16:
+		case REL_ARM | R_ARM_ABS16:
+		case REL_X86 | R_386_16:
+		case REL_X64 | R_X86_64_16:
 			*(unsigned short *) dst += val;
 			break;
-		case R_ARM_ABS32 | ARM_REL:
-		case R_386_32:
+		case REL_ARM | R_ARM_ABS32:
+		case REL_X86 | R_386_32:
+		case REL_X64 | R_X86_64_32:
+			*(unsigned int *) dst += val;
+			break;
+		case REL_X64 | R_X86_64_64:
 			*dst += val;
 			break;
-		case R_ARM_REL32 | ARM_REL:
-		case R_ARM_PLT32 | ARM_REL:
-		case R_386_PC32:
-		case R_386_PLT32:
+		case REL_ARM | R_ARM_REL32:
+		case REL_ARM | R_ARM_PLT32:
+		case REL_X86 | R_386_PLT32:
+		case REL_X86 | R_386_PC32:
+		case REL_X64 | R_X86_64_PC32:
 			addr = outelf_mapping(oe, other_shdr)->vaddr +
 				rel->r_offset;
-			*dst += val - addr;
+			*(unsigned int *) dst += val - addr;
 			break;
-		case R_ARM_PC24 | ARM_REL:
+		case REL_ARM | R_ARM_PC24:
 			addr = outelf_mapping(oe, other_shdr)->vaddr +
 				rel->r_offset;
 			*dst = (*dst & 0xff000000) |
@@ -276,12 +326,12 @@ static void outelf_reloc(struct outelf *oe)
 	for (i = 0; i < oe->nobjs; i++) {
 		struct obj *obj = &oe->objs[i];
 		for (j = 0; j < obj->ehdr->e_shnum; j++)
-			if (obj->shdr[j].sh_type == SHT_REL)
+			if (obj->shdr[j].sh_type == SHT_REL_)
 				outelf_reloc_sec(oe, i, j);
 	}
 }
 
-static void alloc_bss(struct outelf *oe, Elf32_Sym *sym)
+static void alloc_bss(struct outelf *oe, Elf_Sym *sym)
 {
 	int n = oe->nbss_syms++;
 	int off = ALIGN(oe->bss_len, MAX(sym->st_value, 4));
@@ -317,9 +367,9 @@ static void build_symtab(struct outelf *oe)
 {
 	int i, j;
 	char *symstr = oe->symstr;
-	Elf32_Sym *syms = oe->syms;
-	Elf32_Shdr *sym_shdr = &oe->shdr[1];
-	Elf32_Shdr *str_shdr = &oe->shdr[2];
+	Elf_Sym *syms = oe->syms;
+	Elf_Shdr *sym_shdr = &oe->shdr[1];
+	Elf_Shdr *str_shdr = &oe->shdr[2];
 	int n = 1;
 	char *s = putstr(symstr, "");
 	int faddr = oe->shdr_faddr;
@@ -327,16 +377,16 @@ static void build_symtab(struct outelf *oe)
 	for (i = 0; i < oe->nobjs; i++) {
 		struct obj *obj = &oe->objs[i];
 		for (j = 0; j < obj->nsyms; j++) {
-			Elf32_Sym *sym = &obj->syms[j];
-			int type = ELF32_ST_TYPE(sym->st_info);
-			int bind = ELF32_ST_BIND(sym->st_info);
+			Elf_Sym *sym = &obj->syms[j];
+			int type = ELF_ST_TYPE(sym->st_info);
+			int bind = ELF_ST_BIND(sym->st_info);
 			char *name = obj->symstr + sym->st_name;
 			if (!*name || bind == STB_LOCAL ||
 					sym->st_shndx == SHN_UNDEF)
 				continue;
 			syms[n].st_name = s - symstr;
 			s = putstr(s, name);
-			syms[n].st_info = ELF32_ST_INFO(bind, type);
+			syms[n].st_info = ELF_ST_INFO(bind, type);
 			syms[n].st_value = symval(oe, obj, sym);
 			syms[n].st_size = sym->st_size;
 			syms[n].st_shndx = SHN_ABS;
@@ -380,7 +430,8 @@ static void outelf_write(struct outelf *oe, int fd)
 		build_symtab(oe);
 	oe->ehdr.e_phnum = oe->nph;
 	oe->ehdr.e_phoff = sizeof(oe->ehdr);
-	oe->ehdr.e_machine = isarm ? EM_ARM : EM_386;
+	oe->ehdr.e_machine = e_machine;
+	oe->ehdr.e_flags = e_flags;
 	lseek(fd, 0, SEEK_SET);
 	write(fd, &oe->ehdr, sizeof(oe->ehdr));
 	write(fd, &oe->phdr, oe->nph * sizeof(oe->phdr[0]));
@@ -405,13 +456,14 @@ static void outelf_write(struct outelf *oe, int fd)
 
 static void outelf_add(struct outelf *oe, char *mem)
 {
-	Elf32_Ehdr *ehdr = (void *) mem;
-	Elf32_Shdr *shdr = (void *) (mem + ehdr->e_shoff);
+	Elf_Ehdr *ehdr = (void *) mem;
+	Elf_Shdr *shdr = (void *) (mem + ehdr->e_shoff);
 	struct obj *obj;
 	int i;
 	if (ehdr->e_type != ET_REL)
 		return;
-	isarm = ehdr->e_machine == EM_ARM;
+	e_machine = ehdr->e_machine;
+	e_flags = ehdr->e_flags;
 	if (oe->nobjs >= MAXOBJS)
 		die("ld: MAXOBJS reached!");
 	obj = &oe->objs[oe->nobjs++];
@@ -428,7 +480,7 @@ static void outelf_add(struct outelf *oe, char *mem)
 	}
 }
 
-static int link_cs(struct outelf *oe, Elf32_Phdr *phdr, unsigned long faddr,
+static int link_cs(struct outelf *oe, Elf_Phdr *phdr, unsigned long faddr,
 			unsigned long vaddr, unsigned long laddr, int len)
 {
 	int i;
@@ -453,7 +505,7 @@ static int link_cs(struct outelf *oe, Elf32_Phdr *phdr, unsigned long faddr,
 	return len;
 }
 
-static int link_ds(struct outelf *oe, Elf32_Phdr *phdr, unsigned long faddr,
+static int link_ds(struct outelf *oe, Elf_Phdr *phdr, unsigned long faddr,
 			unsigned long vaddr, unsigned long laddr)
 {
 	int len = 0;
@@ -478,7 +530,7 @@ static int link_ds(struct outelf *oe, Elf32_Phdr *phdr, unsigned long faddr,
 	return len;
 }
 
-static int link_bss(struct outelf *oe, Elf32_Phdr *phdr,
+static int link_bss(struct outelf *oe, Elf_Phdr *phdr,
 			unsigned long faddr, unsigned long vaddr, int len)
 {
 	int i;
@@ -553,8 +605,8 @@ static int sym_undef(struct outelf *oe, char *name)
 	for (i = 0; i < oe->nobjs; i++) {
 		struct obj *obj = &oe->objs[i];
 		for (j = 0; j < obj->nsyms; j++) {
-			Elf32_Sym *sym = &obj->syms[j];
-			if (ELF32_ST_BIND(sym->st_info) == STB_LOCAL)
+			Elf_Sym *sym = &obj->syms[j];
+			if (ELF_ST_BIND(sym->st_info) == STB_LOCAL)
 				continue;
 			if (strcmp(name, obj->symstr + sym->st_name))
 				continue;
