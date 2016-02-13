@@ -1,9 +1,9 @@
 /*
- * ld - a small arm/x86 static linker
+ * ld - a small arm/x86(-64) static linker
  *
- * Copyright (C) 2010-2012 Ali Gholami Rudi
+ * Copyright (C) 2010-2016 Ali Gholami Rudi
  *
- * This program is released under the modified BSD license.
+ * This program is released under the Modified BSD license.
  */
 #include <ctype.h>
 #include <elf.h>
@@ -37,7 +37,7 @@ static int e_flags;				/* elf ehdr flags */
 #define MAX(a, b)	((a) > (b) ? (a) : (b))
 #define ALIGN(x, a)	(((x) + (a) - 1) & ~((a) - 1))
 
-/* simplifed elf struct and macro names */
+/* simplified elf struct and macro names */
 #ifdef __x86_64__
 #  define Elf_Phdr	Elf64_Phdr
 #  define Elf_Ehdr	Elf64_Ehdr
