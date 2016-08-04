@@ -1,8 +1,8 @@
 .TH NEATLD 1 
 .SH NAME
-neatld \- the neatld ARM/X86 static linker
+neatld \- the neatld ARM/X86(-64) static linker
 .SH SYNOPSIS
-.B nld
+.B neatld
 [
 .I options
 ]
@@ -41,7 +41,7 @@ for data section and
 .I b
 for BSS section.
 .IR laddr
-can be omitted in which case it would be the same as
+can be omitted, in which case it would be the same as
 .IR vaddr .
 .TP
 .BI -p
