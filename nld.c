@@ -326,7 +326,7 @@ static void outelf_reloc_sec(struct outelf *oe, int o_idx, int s_idx)
 					((*dst + ((val - addr) >> 2)) & 0x00ffffff);
 			break;
 		default:
-			die("unknown relocation type");
+			die("neatld: unknown relocation type!");
 		}
 	}
 }
@@ -476,7 +476,7 @@ static void outelf_add(struct outelf *oe, char *mem)
 	e_machine = ehdr->e_machine;
 	e_flags = ehdr->e_flags;
 	if (oe->nobjs >= MAXOBJS)
-		die("ld: MAXOBJS reached!");
+		die("neatld: MAXOBJS reached!");
 	obj = &oe->objs[oe->nobjs++];
 	obj_init(obj, mem);
 	for (i = 0; i < ehdr->e_shnum; i++) {
@@ -484,7 +484,7 @@ static void outelf_add(struct outelf *oe, char *mem)
 		if (!(shdr[i].sh_flags & 0x7))
 			continue;
 		if (oe->nsecs >= MAXSECS)
-			die("ld: MAXSECS reached");
+			die("neatld: MAXSECS reached!");
 		sec = &oe->secs[oe->nsecs++];
 		sec->o_shdr = &shdr[i];
 		sec->obj = obj;
@@ -745,7 +745,7 @@ static char *obj_add(struct outelf *oe, char *path)
 {
 	char *buf = fileread(path);
 	if (!buf)
-		die("cannot open object");
+		die("neatld: cannot open object!");
 	if (is_ar(path))
 		outelf_archive(oe, buf);
 	else
@@ -762,7 +762,7 @@ int main(int argc, char **argv)
 	int fd;
 	int i = 0;
 	if (argc < 2)
-		die("no object given");
+		die("neatld: no object given!");
 	outelf_init(&oe);
 
 	while (++i < argc) {
@@ -773,7 +773,7 @@ int main(int argc, char **argv)
 		if (argv[i][1] == 'l') {
 			char path[PATHLEN];
 			if (lib_find(path, argv[i] + 2))
-				die("cannot find library");
+				die("neatld: cannot find library!");
 			mem[nmem++] = obj_add(&oe, path);
 			continue;
 		}
@@ -805,9 +805,15 @@ int main(int argc, char **argv)
 			entry = argv[i][2] ? argv[i] + 2 : argv[++i];
 			continue;
 		}
+		if (argv[i][1] == 'h') {
+			printf("Usage: neatld [options] objects\n", argv[0]);
+			return 1;
+		}
 	}
 	outelf_link(&oe);
 	fd = open(out, O_WRONLY | O_TRUNC | O_CREAT, 0700);
+	if (fd < 0)
+		die("neatld: failed to create the output!");
 	outelf_write(&oe, fd);
 	close(fd);
 	for (i = 0; i < nmem; i++)
