@@ -806,7 +806,7 @@ int main(int argc, char **argv)
 			continue;
 		}
 		if (argv[i][1] == 'h') {
-			printf("Usage: neatld [options] objects\n", argv[0]);
+			printf("Usage: %s [options] objects\n", argv[0]);
 			return 1;
 		}
 	}
