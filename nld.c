@@ -1,7 +1,7 @@
 /*
  * NEATLD ARM/X86(-64) STATIC LINKER
  *
- * Copyright (C) 2010-2016 Ali Gholami Rudi
+ * Copyright (C) 2010-2018 Ali Gholami Rudi
  *
  * Permission to use, copy, modify, and/or distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -578,13 +578,16 @@ static void outelf_link(struct outelf *oe)
 
 	len = ALIGN(faddr + len, secalign) - faddr;
 	faddr += len;
-	vaddr = sec_set[I_DS] ? sec_vaddr[I_DS] | (faddr & PAGE_MASK) : vaddr + len;
-	laddr = sec_set[I_DS] ? sec_laddr[I_DS] | (faddr & PAGE_MASK) : laddr + len;
+	vaddr = sec_set[I_DS] ? sec_vaddr[I_DS] | (faddr & PAGE_MASK) :
+		vaddr + PAGE_SIZE + len;
+	laddr = sec_set[I_DS] ? sec_laddr[I_DS] | (faddr & PAGE_MASK) :
+		laddr + PAGE_SIZE + len;
 	len = link_ds(oe, &oe->phdr[1], faddr, vaddr, laddr);
 
 	len = ALIGN(faddr + len, secalign) - faddr;
 	faddr += len;
-	vaddr = sec_set[I_BSS] ? sec_vaddr[I_BSS] | (faddr & PAGE_MASK) : vaddr + len;
+	vaddr = sec_set[I_BSS] ? sec_vaddr[I_BSS] | (faddr & PAGE_MASK) :
+		vaddr + PAGE_SIZE + len;
 	outelf_bss(oe);
 	oe->bss_vaddr = vaddr;
 	len = link_bss(oe, &oe->phdr[2], faddr, vaddr, oe->bss_len);
@@ -806,7 +809,7 @@ int main(int argc, char **argv)
 			continue;
 		}
 		if (argv[i][1] == 'h') {
-			printf("Usage: neatld [options] objects\n", argv[0]);
+			printf("Usage: neatld [options] objects\n");
 			return 1;
 		}
 	}
