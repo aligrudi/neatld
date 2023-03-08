@@ -366,25 +366,35 @@ static void outelf_bss(struct outelf *oe)
 #define SEC_BSS(s)	((s)->sh_type == SHT_NOBITS)
 #define SEC_DATA(s)	(!SEC_CODE(s) && !SEC_BSS(s))
 
-static char *putstr(char *d, char *s)
+static int outelf_str(struct outelf *oe, char *s)
 {
+	int n = oe->nsymstr;
+	char *d = oe->symstr + oe->nsymstr;
 	while (*s)
 		*d++ = *s++;
 	*d++ = '\0';
-	return d;
+	oe->nsymstr = d - oe->symstr;
+	return n;
 }
 
 static void build_symtab(struct outelf *oe)
 {
 	int i, j;
-	char *symstr = oe->symstr;
 	Elf_Sym *syms = oe->syms;
-	Elf_Shdr *sym_shdr = &oe->shdr[1];
-	Elf_Shdr *str_shdr = &oe->shdr[2];
+	Elf_Shdr *cs_shdr = &oe->shdr[++oe->nsh];
+	Elf_Shdr *ds_shdr = &oe->shdr[++oe->nsh];
+	Elf_Shdr *bss_shdr = &oe->shdr[++oe->nsh];
+	Elf_Shdr *sym_shdr = &oe->shdr[++oe->nsh];
+	Elf_Shdr *str_shdr = &oe->shdr[++oe->nsh];
 	int n = 1;
-	char *s = putstr(symstr, "");
 	int faddr = oe->shdr_faddr;
-	oe->nsh = 3;
+	oe->nsh++;
+	outelf_str(oe, "");
+	sym_shdr->sh_name = outelf_str(oe, ".symtab");
+	str_shdr->sh_name = outelf_str(oe, ".strtab");
+	cs_shdr->sh_name = outelf_str(oe, ".text");
+	ds_shdr->sh_name = outelf_str(oe, ".data");
+	bss_shdr->sh_name = outelf_str(oe, ".bss");
 	for (i = 0; i < oe->nobjs; i++) {
 		struct obj *obj = &oe->objs[i];
 		for (j = 0; j < obj->nsyms; j++) {
@@ -395,8 +405,7 @@ static void build_symtab(struct outelf *oe)
 			if (!*name || bind == STB_LOCAL ||
 					sym->st_shndx == SHN_UNDEF)
 				continue;
-			syms[n].st_name = s - symstr;
-			s = putstr(s, name);
+			syms[n].st_name = outelf_str(oe, name);
 			syms[n].st_info = ELF_ST_INFO(bind, type);
 			syms[n].st_value = symval(oe, obj, sym);
 			syms[n].st_size = sym->st_size;
@@ -404,7 +413,6 @@ static void build_symtab(struct outelf *oe)
 			n++;
 		}
 	}
-	oe->nsymstr = s - symstr;
 	oe->nsyms = n;
 
 	oe->shdr_faddr = faddr;
@@ -418,18 +426,37 @@ static void build_symtab(struct outelf *oe)
 	oe->ehdr.e_shoff = oe->shdr_faddr;
 	oe->ehdr.e_shnum = oe->nsh;
 
-	str_shdr->sh_name = 0;
 	str_shdr->sh_type = SHT_STRTAB;
 	str_shdr->sh_offset = oe->symstr_faddr;
 	str_shdr->sh_size = oe->nsymstr;
 
-	sym_shdr->sh_name = 0;
 	sym_shdr->sh_type = SHT_SYMTAB;
 	sym_shdr->sh_entsize = sizeof(oe->syms[0]);
 	sym_shdr->sh_offset = oe->syms_faddr;
 	sym_shdr->sh_size = oe->nsyms * sizeof(oe->syms[0]);
 	sym_shdr->sh_link = str_shdr - oe->shdr;
 	sym_shdr->sh_info = 0;
+
+	cs_shdr->sh_type = SHT_PROGBITS;
+	cs_shdr->sh_flags = SHF_ALLOC | SHF_EXECINSTR;
+	cs_shdr->sh_offset = oe->phdr[I_CS].p_offset;
+	cs_shdr->sh_addr = oe->phdr[I_CS].p_vaddr;
+	cs_shdr->sh_addralign = oe->phdr[I_CS].p_align;
+	cs_shdr->sh_size = oe->phdr[I_CS].p_filesz;
+
+	ds_shdr->sh_type = SHT_PROGBITS;
+	ds_shdr->sh_flags = SHF_ALLOC | SHF_WRITE;
+	ds_shdr->sh_offset = oe->phdr[I_DS].p_offset;
+	ds_shdr->sh_addr = oe->phdr[I_DS].p_vaddr;
+	ds_shdr->sh_addralign = oe->phdr[I_DS].p_align;
+	ds_shdr->sh_size = oe->phdr[I_DS].p_filesz;
+
+	bss_shdr->sh_type = SHT_NOBITS;
+	bss_shdr->sh_flags = SHF_ALLOC | SHF_WRITE;
+	bss_shdr->sh_offset = oe->phdr[I_BSS].p_offset;
+	bss_shdr->sh_addr = oe->phdr[I_BSS].p_vaddr;
+	bss_shdr->sh_addralign = oe->phdr[I_BSS].p_align;
+	bss_shdr->sh_size = oe->phdr[I_BSS].p_filesz;
 }
 
 static void outelf_write(struct outelf *oe, int fd)
