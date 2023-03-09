@@ -533,7 +533,7 @@ static int link_cs(struct outelf *oe, Elf_Phdr *phdr, unsigned long faddr,
 		len += sec->o_shdr->sh_size;
 	}
 	phdr->p_type = PT_LOAD;
-	phdr->p_flags = PF_R | PF_W | PF_X;
+	phdr->p_flags = PF_R | PF_X;
 	phdr->p_vaddr = vaddr;
 	phdr->p_paddr = laddr;
 	phdr->p_offset = faddr;
@@ -558,7 +558,7 @@ static int link_ds(struct outelf *oe, Elf_Phdr *phdr, unsigned long faddr,
 	}
 	len = ALIGN(len, 4);
 	phdr->p_type = PT_LOAD;
-	phdr->p_flags = PF_R | PF_W | PF_X;
+	phdr->p_flags = PF_R | PF_W;
 	phdr->p_align = PAGE_SIZE;
 	phdr->p_vaddr = vaddr;
 	phdr->p_paddr = laddr;
