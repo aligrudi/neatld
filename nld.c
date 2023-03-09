@@ -836,7 +836,15 @@ int main(int argc, char **argv)
 			continue;
 		}
 		if (argv[i][1] == 'h') {
-			printf("Usage: neatld [options] objects\n");
+			printf("Usage: neatld [options] objects\n\n");
+			printf("Options:\n");
+			printf("  -o out          set the output file\n");
+			printf("  -l lib          link with library lib\n");
+			printf("  -L dir          search dir for libraries\n");
+			printf("  -s              do not include a symbol table\n");
+			printf("  -mXvaddr:laddr  section virtual/load address\n");
+			printf("  -p              page-align sections\n");
+			printf("  -e              entry point symbol\n");
 			return 1;
 		}
 	}
