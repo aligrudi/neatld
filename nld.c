@@ -1,7 +1,7 @@
 /*
  * NEATLD ARM/X86(-64) STATIC LINKER
  *
- * Copyright (C) 2010-2023 Ali Gholami Rudi
+ * Copyright (C) 2010-2026 Ali Gholami Rudi
  *
  * Permission to use, copy, modify, and/or distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -38,7 +38,6 @@ static int e_flags;				/* elf ehdr flags */
 
 #define MAXSECS		(1 << 10)
 #define MAXOBJS		(1 << 7)
-#define MAXSYMS		(1 << 12)
 #define PAGE_SIZE	(1 << 12)
 #define PAGE_MASK	(PAGE_SIZE - 1)
 #define MAXFILES	(1 << 10)
@@ -81,7 +80,7 @@ struct obj {
 	Elf_Ehdr *ehdr;
 	Elf_Shdr *shdr;
 	Elf_Sym *syms;
-	int nsyms;
+	int syms_cnt;
 	char *symstr;
 	char *shstr;
 };
@@ -101,28 +100,28 @@ struct bss_sym {
 struct outelf {
 	Elf_Ehdr ehdr;
 	Elf_Phdr phdr[MAXSECS];
-	int nph;
+	int ph_cnt;
 	struct secmap secs[MAXSECS];
-	int nsecs;
+	int secs_n;
 	struct obj objs[MAXOBJS];
-	int nobjs;
+	int objs_n;
 
 	/* code section */
 	unsigned long code_addr;
 
 	/* bss section */
-	struct bss_sym bss_syms[MAXSYMS];
-	int nbss_syms;
+	struct bss_sym *bss_syms;
+	int bss_syms_n, bss_syms_sz;
 	unsigned long bss_vaddr;
 	int bss_len;
 
 	/* symtab section */
 	Elf_Shdr shdr[MAXSECS];
-	int nsh;
-	char symstr[MAXSYMS];
-	Elf_Sym syms[MAXSYMS];
-	int nsyms;
-	int nsymstr;
+	int sh_cnt;
+	char *symstr;
+	int symstr_n, symstr_sz;
+	Elf_Sym *syms;
+	int syms_n, syms_sz;
 	unsigned long shdr_faddr;
 	unsigned long syms_faddr;
 	unsigned long symstr_faddr;
@@ -133,7 +132,7 @@ static int nosyms = 0;
 static Elf_Sym *obj_find(struct obj *obj, char *name)
 {
 	int i;
-	for (i = 0; i < obj->nsyms; i++) {
+	for (i = 0; i < obj->syms_cnt; i++) {
 		Elf_Sym *sym = &obj->syms[i];
 		if (ELF_ST_BIND(sym->st_info) == STB_LOCAL ||
 				sym->st_shndx == SHN_UNDEF)
@@ -156,7 +155,7 @@ static void obj_init(struct obj *obj, char *mem)
 			continue;
 		obj->symstr = mem + obj->shdr[obj->shdr[i].sh_link].sh_offset;
 		obj->syms = (void *) (mem + obj->shdr[i].sh_offset);
-		obj->nsyms = obj->shdr[i].sh_size / sizeof(*obj->syms);
+		obj->syms_cnt = obj->shdr[i].sh_size / sizeof(*obj->syms);
 	}
 }
 
@@ -178,10 +177,17 @@ static void outelf_init(struct outelf *oe)
 	oe->ehdr.e_shentsize = sizeof(Elf_Shdr);
 }
 
+static void outelf_done(struct outelf *oe)
+{
+	free(oe->bss_syms);
+	free(oe->syms);
+	free(oe->symstr);
+}
+
 static struct secmap *outelf_mapping(struct outelf *oe, Elf_Shdr *shdr)
 {
 	int i;
-	for (i = 0; i < oe->nsecs; i++)
+	for (i = 0; i < oe->secs_n; i++)
 		if (oe->secs[i].o_shdr == shdr)
 			return &oe->secs[i];
 	return NULL;
@@ -191,7 +197,7 @@ static int outelf_find(struct outelf *oe, char *name,
 			struct obj **sym_obj, Elf_Sym **sym_sym)
 {
 	int i;
-	for (i = 0; i < oe->nobjs; i++) {
+	for (i = 0; i < oe->objs_n; i++) {
 		struct obj *obj = &oe->objs[i];
 		Elf_Sym *sym;
 		if ((sym = obj_find(obj, name))) {
@@ -206,7 +212,7 @@ static int outelf_find(struct outelf *oe, char *name,
 static unsigned long bss_addr(struct outelf *oe, Elf_Sym *sym)
 {
 	int i;
-	for (i = 0; i < oe->nbss_syms; i++)
+	for (i = 0; i < oe->bss_syms_n; i++)
 		if (oe->bss_syms[i].sym == sym)
 			return oe->bss_vaddr + oe->bss_syms[i].off;
 	return 0;
@@ -334,7 +340,7 @@ static void outelf_reloc_sec(struct outelf *oe, int o_idx, int s_idx)
 static void outelf_reloc(struct outelf *oe)
 {
 	int i, j;
-	for (i = 0; i < oe->nobjs; i++) {
+	for (i = 0; i < oe->objs_n; i++) {
 		struct obj *obj = &oe->objs[i];
 		for (j = 0; j < obj->ehdr->e_shnum; j++)
 			if (obj->shdr[j].sh_type == SHT_REL_)
@@ -344,8 +350,14 @@ static void outelf_reloc(struct outelf *oe)
 
 static void alloc_bss(struct outelf *oe, Elf_Sym *sym)
 {
-	int n = oe->nbss_syms++;
+	int n = oe->bss_syms_n++;
 	int off = ALIGN(oe->bss_len, MAX(sym->st_value, 4));
+	if (n > oe->bss_syms_sz) {
+		oe->bss_syms_sz = oe->bss_syms_sz ? oe->bss_syms_sz * 2 : 256;
+		if (!(oe->bss_syms = realloc(oe->bss_syms,
+				oe->bss_syms_sz * sizeof(oe->bss_syms[0]))))
+			die("neatld: failed to allocate memory for BSS symbols");
+	}
 	oe->bss_syms[n].sym = sym;
 	oe->bss_syms[n].off = off;
 	oe->bss_len = off + sym->st_size;
@@ -354,9 +366,9 @@ static void alloc_bss(struct outelf *oe, Elf_Sym *sym)
 static void outelf_bss(struct outelf *oe)
 {
 	int i, j;
-	for (i = 0; i < oe->nobjs; i++) {
+	for (i = 0; i < oe->objs_n; i++) {
 		struct obj *obj = &oe->objs[i];
-		for (j = 0; j < obj->nsyms; j++)
+		for (j = 0; j < obj->syms_cnt; j++)
 			if (obj->syms[j].st_shndx == SHN_COMMON)
 				alloc_bss(oe, &obj->syms[j]);
 	}
@@ -368,72 +380,83 @@ static void outelf_bss(struct outelf *oe)
 
 static int outelf_str(struct outelf *oe, char *s)
 {
-	int n = oe->nsymstr;
-	char *d = oe->symstr + oe->nsymstr;
-	while (*s)
-		*d++ = *s++;
-	*d++ = '\0';
-	oe->nsymstr = d - oe->symstr;
+	int len = strlen(s) + 1;
+	int n = oe->symstr_n;
+	while (oe->symstr_n + len > oe->symstr_sz) {
+		oe->symstr_sz = oe->symstr_sz ? oe->symstr_sz * 2 : 1024;
+		if (!(oe->symstr = realloc(oe->symstr, oe->symstr_sz)))
+			die("neatld: failed to allocate oe->symstr");
+	}
+	memcpy(oe->symstr + oe->symstr_n, s, len);
+	oe->symstr_n += len;
 	return n;
+}
+
+static Elf_Sym *outelf_sym(struct outelf *oe)
+{
+	if (oe->syms_n >= oe->syms_sz) {
+		oe->syms_sz = oe->syms_sz ? oe->syms_sz * 2 : 256;
+		if (!(oe->syms = realloc(oe->syms, oe->syms_sz * sizeof(oe->syms[0]))))
+			die("neatld: failed to allocate oe->sysm");
+	}
+	return &oe->syms[oe->syms_n++];
 }
 
 static void build_symtab(struct outelf *oe)
 {
-	int i, j;
-	Elf_Sym *syms = oe->syms;
-	Elf_Shdr *cs_shdr = &oe->shdr[++oe->nsh];
-	Elf_Shdr *ds_shdr = &oe->shdr[++oe->nsh];
-	Elf_Shdr *bss_shdr = &oe->shdr[++oe->nsh];
-	Elf_Shdr *sym_shdr = &oe->shdr[++oe->nsh];
-	Elf_Shdr *str_shdr = &oe->shdr[++oe->nsh];
-	int n = 1;
+	Elf_Shdr *cs_shdr = &oe->shdr[++oe->sh_cnt];
+	Elf_Shdr *ds_shdr = &oe->shdr[++oe->sh_cnt];
+	Elf_Shdr *bss_shdr = &oe->shdr[++oe->sh_cnt];
+	Elf_Shdr *sym_shdr = &oe->shdr[++oe->sh_cnt];
+	Elf_Shdr *str_shdr = &oe->shdr[++oe->sh_cnt];
 	int faddr = oe->shdr_faddr;
-	oe->nsh++;
+	int i, j;
+	oe->sh_cnt++;
 	outelf_str(oe, "");
 	sym_shdr->sh_name = outelf_str(oe, ".symtab");
 	str_shdr->sh_name = outelf_str(oe, ".strtab");
 	cs_shdr->sh_name = outelf_str(oe, ".text");
 	ds_shdr->sh_name = outelf_str(oe, ".data");
 	bss_shdr->sh_name = outelf_str(oe, ".bss");
-	for (i = 0; i < oe->nobjs; i++) {
+	memset(outelf_sym(oe), 0, sizeof(Elf_Sym));
+	for (i = 0; i < oe->objs_n; i++) {
 		struct obj *obj = &oe->objs[i];
-		for (j = 0; j < obj->nsyms; j++) {
+		for (j = 0; j < obj->syms_cnt; j++) {
 			Elf_Sym *sym = &obj->syms[j];
 			int type = ELF_ST_TYPE(sym->st_info);
 			int bind = ELF_ST_BIND(sym->st_info);
 			char *name = obj->symstr + sym->st_name;
-			if (!*name || bind == STB_LOCAL ||
-					sym->st_shndx == SHN_UNDEF)
+			Elf_Sym *osym;
+			if (!*name || bind == STB_LOCAL || sym->st_shndx == SHN_UNDEF)
 				continue;
-			syms[n].st_name = outelf_str(oe, name);
-			syms[n].st_info = ELF_ST_INFO(bind, type);
-			syms[n].st_value = symval(oe, obj, sym);
-			syms[n].st_size = sym->st_size;
-			syms[n].st_shndx = SHN_ABS;
-			n++;
+			osym = outelf_sym(oe);
+			osym->st_name = outelf_str(oe, name);
+			osym->st_info = ELF_ST_INFO(bind, type);
+			osym->st_value = symval(oe, obj, sym);
+			osym->st_size = sym->st_size;
+			osym->st_shndx = SHN_ABS;
 		}
 	}
-	oe->nsyms = n;
 
 	oe->shdr_faddr = faddr;
-	faddr += oe->nsh * sizeof(oe->shdr[0]);
+	faddr += oe->sh_cnt * sizeof(oe->shdr[0]);
 	oe->syms_faddr = faddr;
-	faddr += oe->nsyms * sizeof(oe->syms[0]);
+	faddr += oe->syms_n * sizeof(oe->syms[0]);
 	oe->symstr_faddr = faddr;
-	faddr += oe->nsymstr;
+	faddr += oe->symstr_n;
 
 	oe->ehdr.e_shstrndx = str_shdr - oe->shdr;
 	oe->ehdr.e_shoff = oe->shdr_faddr;
-	oe->ehdr.e_shnum = oe->nsh;
+	oe->ehdr.e_shnum = oe->sh_cnt;
 
 	str_shdr->sh_type = SHT_STRTAB;
 	str_shdr->sh_offset = oe->symstr_faddr;
-	str_shdr->sh_size = oe->nsymstr;
+	str_shdr->sh_size = oe->symstr_n;
 
 	sym_shdr->sh_type = SHT_SYMTAB;
 	sym_shdr->sh_entsize = sizeof(oe->syms[0]);
 	sym_shdr->sh_offset = oe->syms_faddr;
-	sym_shdr->sh_size = oe->nsyms * sizeof(oe->syms[0]);
+	sym_shdr->sh_size = oe->syms_n * sizeof(oe->syms[0]);
 	sym_shdr->sh_link = str_shdr - oe->shdr;
 	sym_shdr->sh_info = 0;
 
@@ -466,14 +489,14 @@ static void outelf_write(struct outelf *oe, int fd)
 				sec_vaddr[I_CS] + sec_laddr[I_CS];
 	if (!nosyms)
 		build_symtab(oe);
-	oe->ehdr.e_phnum = oe->nph;
+	oe->ehdr.e_phnum = oe->ph_cnt;
 	oe->ehdr.e_phoff = sizeof(oe->ehdr);
 	oe->ehdr.e_machine = e_machine;
 	oe->ehdr.e_flags = e_flags;
 	lseek(fd, 0, SEEK_SET);
 	write(fd, &oe->ehdr, sizeof(oe->ehdr));
-	write(fd, &oe->phdr, oe->nph * sizeof(oe->phdr[0]));
-	for (i = 0; i < oe->nsecs; i++) {
+	write(fd, &oe->phdr, oe->ph_cnt * sizeof(oe->phdr[0]));
+	for (i = 0; i < oe->secs_n; i++) {
 		struct secmap *sec = &oe->secs[i];
 		char *buf = sec->obj->mem + sec->o_shdr->sh_offset;
 		int len = sec->o_shdr->sh_size;
@@ -484,11 +507,11 @@ static void outelf_write(struct outelf *oe, int fd)
 	}
 	if (!nosyms) {
 		lseek(fd, oe->shdr_faddr, SEEK_SET);
-		write(fd, &oe->shdr, oe->nsh * sizeof(oe->shdr[0]));
+		write(fd, &oe->shdr, oe->sh_cnt * sizeof(oe->shdr[0]));
 		lseek(fd, oe->syms_faddr, SEEK_SET);
-		write(fd, &oe->syms, oe->nsyms * sizeof(oe->syms[0]));
+		write(fd, oe->syms, oe->syms_n * sizeof(oe->syms[0]));
 		lseek(fd, oe->symstr_faddr, SEEK_SET);
-		write(fd, &oe->symstr, oe->nsymstr);
+		write(fd, oe->symstr, oe->symstr_n);
 	}
 }
 
@@ -502,17 +525,17 @@ static void outelf_add(struct outelf *oe, char *mem)
 		return;
 	e_machine = ehdr->e_machine;
 	e_flags = ehdr->e_flags;
-	if (oe->nobjs >= MAXOBJS)
+	if (oe->objs_n >= MAXOBJS)
 		die("neatld: MAXOBJS reached!");
-	obj = &oe->objs[oe->nobjs++];
+	obj = &oe->objs[oe->objs_n++];
 	obj_init(obj, mem);
 	for (i = 0; i < ehdr->e_shnum; i++) {
 		struct secmap *sec;
 		if (!(shdr[i].sh_flags & 0x7))
 			continue;
-		if (oe->nsecs >= MAXSECS)
+		if (oe->secs_n >= MAXSECS)
 			die("neatld: MAXSECS reached!");
-		sec = &oe->secs[oe->nsecs++];
+		sec = &oe->secs[oe->secs_n++];
 		sec->o_shdr = &shdr[i];
 		sec->obj = obj;
 	}
@@ -522,7 +545,7 @@ static int link_cs(struct outelf *oe, Elf_Phdr *phdr, unsigned long faddr,
 			unsigned long vaddr, unsigned long laddr, int len)
 {
 	int i;
-	for (i = 0; i < oe->nsecs; i++) {
+	for (i = 0; i < oe->secs_n; i++) {
 		struct secmap *sec = &oe->secs[i];
 		int alignment = MAX(sec->o_shdr->sh_addralign, 4);
 		if (!SEC_CODE(sec->o_shdr))
@@ -548,7 +571,7 @@ static int link_ds(struct outelf *oe, Elf_Phdr *phdr, unsigned long faddr,
 {
 	int len = 0;
 	int i;
-	for (i = 0; i < oe->nsecs; i++) {
+	for (i = 0; i < oe->secs_n; i++) {
 		struct secmap *sec = &oe->secs[i];
 		if (!SEC_DATA(sec->o_shdr))
 			continue;
@@ -572,7 +595,7 @@ static int link_bss(struct outelf *oe, Elf_Phdr *phdr,
 			unsigned long faddr, unsigned long vaddr, int len)
 {
 	int i;
-	for (i = 0; i < oe->nsecs; i++) {
+	for (i = 0; i < oe->secs_n; i++) {
 		struct secmap *sec = &oe->secs[i];
 		int alignment = MAX(sec->o_shdr->sh_addralign, 4);
 		if (!SEC_BSS(sec->o_shdr))
@@ -619,7 +642,7 @@ static void outelf_link(struct outelf *oe)
 	oe->bss_vaddr = vaddr;
 	len = link_bss(oe, &oe->phdr[2], faddr, vaddr, oe->bss_len);
 
-	oe->nph = 3;
+	oe->ph_cnt = 3;
 	outelf_reloc(oe);
 	oe->shdr_faddr = faddr;
 }
@@ -643,9 +666,9 @@ static int sym_undef(struct outelf *oe, char *name)
 {
 	int i, j;
 	int undef = 0;
-	for (i = 0; i < oe->nobjs; i++) {
+	for (i = 0; i < oe->objs_n; i++) {
 		struct obj *obj = &oe->objs[i];
-		for (j = 0; j < obj->nsyms; j++) {
+		for (j = 0; j < obj->syms_cnt; j++) {
 			Elf_Sym *sym = &obj->syms[j];
 			if (ELF_ST_BIND(sym->st_info) == STB_LOCAL)
 				continue;
@@ -663,12 +686,12 @@ static int outelf_ar_link(struct outelf *oe, char *ar, int base)
 {
 	char *ar_index;
 	char *ar_name;
-	int nsyms = get_be32((void *) ar);
+	int syms_cnt = get_be32((void *) ar);
 	int added = 0;
 	int i;
 	ar_index = ar + 4;
-	ar_name = ar_index + nsyms * 4;
-	for (i = 0; i < nsyms; i++) {
+	ar_name = ar_index + syms_cnt * 4;
+	for (i = 0; i < syms_cnt; i++) {
 		int off = get_be32((void *) ar_index + i * 4) +
 				sizeof(struct arhdr);
 		if (sym_undef(oe, ar_name)) {
@@ -856,5 +879,6 @@ int main(int argc, char **argv)
 	close(fd);
 	for (i = 0; i < nmem; i++)
 		free(mem[i]);
+	outelf_done(&oe);
 	return 0;
 }
