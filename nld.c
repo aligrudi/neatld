@@ -127,7 +127,8 @@ struct outelf {
 	unsigned long symstr_faddr;
 };
 
-static int nosyms = 0;
+static int nosyms = 0;		/* do not create a symbol table */
+static int nosyms_locals = 1;	/* discard local symbols */
 
 static Elf_Sym *obj_find(struct obj *obj, char *name)
 {
@@ -427,7 +428,9 @@ static void build_symtab(struct outelf *oe)
 			int bind = ELF_ST_BIND(sym->st_info);
 			char *name = obj->symstr + sym->st_name;
 			Elf_Sym *osym;
-			if (!*name || bind == STB_LOCAL || sym->st_shndx == SHN_UNDEF)
+			if (!*name || sym->st_shndx == SHN_UNDEF)
+				continue;
+			if (bind == STB_LOCAL && nosyms_locals)
 				continue;
 			osym = outelf_sym(oe);
 			osym->st_name = outelf_str(oe, name);
@@ -842,8 +845,10 @@ int main(int argc, char **argv)
 			nosyms = 1;
 			continue;
 		}
-		if (argv[i][1] == 'g')
+		if (argv[i][1] == 'g') {
+			nosyms_locals = 0;
 			continue;
+		}
 		if (argv[i][1] == 'm') {
 			char sec = argv[i][2];
 			char *arg = argv[i][3] == '=' ? argv[i] + 4 : argv[++i];
@@ -868,6 +873,7 @@ int main(int argc, char **argv)
 			printf("  -mXvaddr:laddr  section virtual/load address\n");
 			printf("  -p              page-align sections\n");
 			printf("  -e              entry point symbol\n");
+			printf("  -g              include local symbols\n");
 			return 1;
 		}
 	}
